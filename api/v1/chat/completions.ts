@@ -112,13 +112,13 @@ function getToolNames(
   return new Set(
     (tools || [])
       .filter(
-        x =>
-          x.type === 'function' &&
-          !!x.function?.name
+        tool =>
+          tool.type === 'function' &&
+          !!tool.function?.name
       )
       .map(
-        x =>
-          x.function.name
+        tool =>
+          tool.function.name
       )
   );
 }
@@ -128,9 +128,6 @@ function findJsonObjects(
 ): string[] {
   const results: string[] = [];
 
-  /*
-   * Fenced JSON.
-   */
   const fenced =
     text.match(
       /```(?:json)?\s*([\s\S]*?)\s*```/gi
@@ -158,9 +155,6 @@ function findJsonObjects(
     }
   }
 
-  /*
-   * Balanced JSON objects.
-   */
   let depth = 0;
   let start = -1;
   let inString = false;
@@ -200,9 +194,7 @@ function findJsonObjects(
       }
 
       depth++;
-    }
-
-    if (c === '}') {
+    } else if (c === '}') {
       depth--;
 
       if (
@@ -259,14 +251,15 @@ function normalizeArguments(
 
 function makeToolCall(
   name: string,
-  args: any
+  args: any,
+  suppliedId?: string
 ): OpenAIToolCall {
   return {
     id:
+      suppliedId ||
       `call_${generateId()}`,
 
-    type:
-      'function',
+    type: 'function',
 
     function: {
       name,
@@ -279,21 +272,6 @@ function makeToolCall(
   };
 }
 
-/**
- * Parse the various tool-call formats that
- * an upstream model may emit.
- *
- * Supported:
- *
- * {"name":"shell","arguments":{...}}
- * {"tool":"shell","arguments":{...}}
- * {"tool_call":{...}}
- * {"function_call":{...}}
- * {"tool_calls":[...]}
- * <tool_call>{...}</tool_call>
- * TOOL_CALL: {...}
- * Called function shell + JSON
- */
 function parseToolCalls(
   text: string,
   tools?: OpenAITool[]
@@ -305,15 +283,13 @@ function parseToolCalls(
     return [];
   }
 
-  const calls:
-    OpenAIToolCall[] = [];
-
-  const seen =
-    new Set<string>();
+  const calls: OpenAIToolCall[] = [];
+  const seen = new Set<string>();
 
   function add(
     name: any,
-    args: any
+    args: any,
+    id?: any
   ) {
     if (
       typeof name !== 'string' ||
@@ -337,13 +313,16 @@ function parseToolCalls(
     calls.push(
       makeToolCall(
         name,
-        normalized
+        normalized,
+        typeof id === 'string'
+          ? id
+          : undefined
       )
     );
   }
 
   /*
-   * Explicit <tool_call>...</tool_call>
+   * <tool_call>{...}</tool_call>
    */
   const xmlMatches =
     text.match(
@@ -370,14 +349,13 @@ function parseToolCalls(
         const obj =
           JSON.parse(cleaned);
 
-        if (
-          obj?.name
-        ) {
+        if (obj?.name) {
           add(
             obj.name,
             obj.arguments ??
               obj.parameters ??
-              {}
+              {},
+            obj.id
           );
         }
 
@@ -394,30 +372,61 @@ function parseToolCalls(
               call?.function?.name ||
                 call?.name ||
                 call?.tool,
+
               call?.function?.arguments ??
                 call?.arguments ??
-                {}
+                call?.parameters ??
+                {},
+
+              call?.id
             );
           }
         }
       } catch {
-        // Continue with other parsers.
+        // Continue.
       }
     }
   }
 
   /*
-   * Called function NAME
+   * Explicit TOOL_CALL: ...
    */
-  const calledMatches =
+  const prefixMatches =
     [
       ...text.matchAll(
-        /Called function\s+([A-Za-z0-9_.:-]+)/gi
+        /TOOL_CALL\s*:\s*([\s\S]+)/gi
       )
     ];
 
+  for (
+    const match of prefixMatches
+  ) {
+    const payload =
+      match[1].trim();
+
+    try {
+      const obj =
+        JSON.parse(payload);
+
+      add(
+        obj?.name ||
+          obj?.tool ||
+          obj?.function?.name,
+
+        obj?.arguments ??
+          obj?.parameters ??
+          obj?.function?.arguments ??
+          {},
+
+        obj?.id
+      );
+    } catch {
+      // Continue.
+    }
+  }
+
   /*
-   * JSON objects.
+   * JSON envelopes.
    */
   const jsons =
     findJsonObjects(text);
@@ -437,11 +446,8 @@ function parseToolCalls(
       }
 
       /*
-       * OpenAI-style:
-       *
-       * {
-       *   "tool_calls": [...]
-       * }
+       * Native-ish:
+       * { tool_calls: [...] }
        */
       if (
         Array.isArray(
@@ -456,9 +462,13 @@ function parseToolCalls(
             call?.function?.name ||
               call?.name ||
               call?.tool,
+
             call?.function?.arguments ??
               call?.arguments ??
-              {}
+              call?.parameters ??
+              {},
+
+            call?.id
           );
         }
 
@@ -466,9 +476,7 @@ function parseToolCalls(
       }
 
       /*
-       * Envelope:
-       *
-       * {"tool_call": {...}}
+       * { tool_call: {...} }
        */
       if (
         obj.tool_call &&
@@ -486,16 +494,16 @@ function parseToolCalls(
           call.arguments ??
             call.parameters ??
             call.function?.arguments ??
-            {}
+            {},
+
+          call.id
         );
 
         continue;
       }
 
       /*
-       * Envelope:
-       *
-       * {"function_call": {...}}
+       * { function_call: {...} }
        */
       if (
         obj.function_call &&
@@ -509,120 +517,101 @@ function parseToolCalls(
           call.name,
 
           call.arguments ??
-            {}
+            {},
+
+          call.id
         );
 
         continue;
       }
 
       /*
-       * Direct:
-       *
-       * {"name":"shell","arguments":{}}
-       *
-       * {"tool":"shell","arguments":{}}
+       * Direct object.
        */
-      let name:
-        | string
-        | undefined;
+      const name =
+        typeof obj.name === 'string'
+          ? obj.name
+          : typeof obj.tool === 'string'
+            ? obj.tool
+            : undefined;
+
+      if (!name) {
+        continue;
+      }
+
+      let args =
+        obj.arguments;
 
       if (
-        typeof obj.name ===
-        'string'
+        args === undefined
       ) {
-        name = obj.name;
+        args =
+          obj.parameters;
       }
 
       if (
-        typeof obj.tool ===
-        'string'
+        args === undefined
       ) {
-        name = obj.tool;
+        const copy = {
+          ...obj
+        };
+
+        delete copy.name;
+        delete copy.tool;
+
+        args = copy;
       }
 
-      /*
-       * If this is:
-       *
-       * Called function shell
-       *
-       * followed by JSON args.
-       */
-      if (
-        !name &&
-        calledMatches.length
-      ) {
-        name =
-          calledMatches[0][1];
-      }
-
-      if (name) {
-        let args =
-          obj.arguments;
-
-        if (
-          args === undefined
-        ) {
-          args =
-            obj.parameters;
-        }
-
-        if (
-          args === undefined
-        ) {
-          const copy = {
-            ...obj
-          };
-
-          delete copy.name;
-          delete copy.tool;
-
-          args = copy;
-        }
-
-        add(
-          name,
-          args
-        );
-      }
+      add(
+        name,
+        args,
+        obj.id
+      );
     } catch {
-      continue;
+      // Not valid JSON.
     }
   }
 
   /*
-   * TOOL_CALL: prefix.
+   * "Called function shell"
+   *
+   * Some upstream responses emit the name in
+   * plain text and arguments in a JSON object.
    */
-  const prefixMatches =
+  const calledMatches =
     [
       ...text.matchAll(
-        /TOOL_CALL\s*:\s*([\s\S]+)/gi
+        /Called function\s+([A-Za-z0-9_.:-]+)/gi
       )
     ];
 
-  for (
-    const match of
-    prefixMatches
-  ) {
-    const payload =
-      match[1].trim();
+  if (calledMatches.length) {
+    const jsons =
+      findJsonObjects(text);
 
-    try {
-      const obj =
-        JSON.parse(payload);
+    for (
+      const match of calledMatches
+    ) {
+      const name =
+        match[1];
 
-      add(
-        obj?.name ||
-          obj?.tool ||
-          obj?.function?.name,
+      for (
+        const raw of jsons
+      ) {
+        try {
+          const obj =
+            JSON.parse(raw);
 
-        obj?.arguments ??
-          obj?.parameters ??
-          obj?.function?.arguments ??
-          {}
-      );
-    } catch {
-      // JSON parser above may already
-      // have handled it.
+          add(
+            name,
+            obj
+          );
+
+          break;
+        } catch {
+          // Continue.
+        }
+      }
     }
   }
 
@@ -736,9 +725,7 @@ function createStreamChunk(
       choices: [
         {
           index: 0,
-
           delta,
-
           finish_reason:
             finishReason
         }
@@ -751,43 +738,92 @@ function hasToolResult(
   body: OpenAIChatRequest
 ): boolean {
   return body.messages.some(
-    (msg: any) =>
-      msg?.role === 'tool'
+    (message: any) =>
+      message?.role === 'tool'
   );
 }
 
-function addContinuationPrompt(
-  requestBody: any
-) {
-  const continuation = `
+function hasAssistantToolCall(
+  body: OpenAIChatRequest
+): boolean {
+  return body.messages.some(
+    (message: any) =>
+      message?.role === 'assistant' &&
+      Array.isArray(
+        message?.tool_calls
+      ) &&
+      message.tool_calls.length > 0
+  );
+}
 
-=== FINAL AGENT CONTINUATION ===
+function appendToolProtocol(
+  systemPrompt: string,
+  tools?: OpenAITool[]
+): string {
+  if (
+    !tools ||
+    !tools.length
+  ) {
+    return systemPrompt;
+  }
 
-A tool has already been executed by the external agent.
+  const toolList =
+    tools
+      .filter(
+        tool =>
+          tool.type === 'function' &&
+          tool.function?.name
+      )
+      .map(
+        tool =>
+          JSON.stringify(tool)
+      )
+      .join('\n');
 
-The tool result is included in the conversation.
+  if (!toolList) {
+    return systemPrompt;
+  }
 
-Continue the user's ORIGINAL task now.
+  return [
+    systemPrompt,
+    '',
+    '=== AVAILABLE AGENT TOOLS ===',
+    toolList,
+    '',
+    '=== TOOL CALL PROTOCOL ===',
+    'When a tool is required, output ONLY one JSON object:',
+    '{"name":"TOOL_NAME","arguments":{"argument":"value"}}',
+    '',
+    'TOOL_NAME must exactly match an available tool.',
+    'Do not fabricate tool results.',
+    'The external agent executes the tool.',
+    'After a tool result is supplied, continue the ORIGINAL task.',
+    'If the task is complete, answer normally.',
+    'Never return an empty response.',
+    '=== END TOOL PROTOCOL ==='
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
-Rules:
-1. Use the tool result as factual context.
-2. Do not pretend to execute another tool yourself.
-3. If the task is complete, answer the user normally.
-4. Clearly explain what was completed.
-5. If another tool is genuinely required, request it using the available tool-call JSON format.
-6. NEVER return an empty response.
-7. NEVER respond with only whitespace.
-8. NEVER say that you are waiting for a tool when the tool result is already present.
-
-=== END FINAL AGENT CONTINUATION ===
-`;
-
-  requestBody.systemPrompt =
-    (
-      requestBody.systemPrompt ||
-      ''
-    ) +
-    continuation;
+function appendContinuation(
+  systemPrompt: string
+): string {
+  return [
+    systemPrompt,
+    '',
+    '=== FINAL AGENT CONTINUATION ===',
+    'A tool has already executed.',
+    'Its real result is present in the conversation.',
+    'Continue the original user task now.',
+    '',
+    'Return a normal natural-language answer if the task is complete.',
+    'Use the tool result as factual context.',
+    'Do not invent results.',
+    'Do not say you are waiting for a tool.',
+    'Do not return an empty response.',
+    '=== END FINAL AGENT CONTINUATION ==='
+  ].join('\n');
 }
 
 async function callArnaruRequest(
@@ -804,13 +840,43 @@ async function callArnaruRequest(
       );
 }
 
+async function readArnaruResponse(
+  response: Response
+) {
+  const rawText =
+    await response.text();
+
+  const parsed =
+    parseSSE(rawText);
+
+  return {
+    rawText,
+    parsed
+  };
+}
+
+function makeDiagnostic(
+  parsed: any
+): string {
+  if (
+    parsed?.errorMessage
+  ) {
+    return (
+      `Arnaru returned an error: ${parsed.errorMessage}`
+    );
+  }
+
+  return (
+    'Arnaru returned an empty response after the tool execution.'
+  );
+}
+
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse
 ) {
   if (
-    req.method ===
-    'OPTIONS'
+    req.method === 'OPTIONS'
   ) {
     res.setHeader(
       'Access-Control-Allow-Origin',
@@ -833,8 +899,7 @@ export default async function handler(
   }
 
   if (
-    req.method !==
-    'POST'
+    req.method !== 'POST'
   ) {
     return res
       .status(405)
@@ -869,9 +934,7 @@ export default async function handler(
 
     if (
       !body ||
-      !Array.isArray(
-        body.messages
-      ) ||
+      !Array.isArray(body.messages) ||
       body.messages.length === 0
     ) {
       return res
@@ -905,76 +968,53 @@ export default async function handler(
       });
 
     /*
-     * Tell Arnaru about available tools.
+     * Tool protocol.
      */
-    if (
-      body.tools &&
-      body.tools.length
-    ) {
-      const toolList =
+    arnaruBody.systemPrompt =
+      appendToolProtocol(
+        arnaruBody.systemPrompt || '',
         body.tools
-          .filter(
-            x =>
-              x.type ===
-                'function' &&
-              x.function?.name
-          )
-          .map(
-            x =>
-              JSON.stringify(
-                x
-              )
-          )
-          .join('\n');
+      );
 
-      const toolInstruction = `
-
-AVAILABLE AGENT TOOLS:
-
-${toolList}
-
-TOOL CALL PROTOCOL:
-
-When you need to use a tool, output ONLY:
-
-{"name":"TOOL_NAME","arguments":{"argument":"value"}}
-
-TOOL_NAME must exactly match one of the available tools.
-
-You may request another tool after a previous tool result.
-
-Do not fabricate tool results.
-
-The external agent executes tools and sends their results back.
-
-When a tool result is already present in the conversation, CONTINUE THE ORIGINAL TASK and produce a normal final answer unless another tool is actually required.
-
-NEVER output an empty response.
-`;
-
-      arnaruBody.systemPrompt =
-        (
-          arnaruBody.systemPrompt ||
-          ''
-        ) +
-        toolInstruction;
-    }
-
-    /*
-     * Explicit continuation when AnyClaw
-     * has already executed a tool.
-     */
     const continuation =
       hasToolResult(body);
 
+    /*
+     * The continuation instruction is only added
+     * after a real tool result exists.
+     */
     if (continuation) {
-      addContinuationPrompt(
-        arnaruBody
-      );
+      arnaruBody.systemPrompt =
+        appendContinuation(
+          arnaruBody.systemPrompt || ''
+        );
     }
 
     /*
-     * First upstream request.
+     * Debugging metadata.
+     *
+     * Deliberately do not print full tool output because
+     * command output can contain secrets.
+     */
+    console.log(
+      '[Arnaru proxy]',
+      JSON.stringify({
+        model,
+        messageCount:
+          body.messages.length,
+        hasToolResult:
+          continuation,
+        hasAssistantToolCall:
+          hasAssistantToolCall(body),
+        toolCount:
+          body.tools?.length || 0,
+        hasFiles:
+          files.length > 0
+      })
+    );
+
+    /*
+     * FIRST REQUEST
      */
     let arnaruResponse =
       await callArnaruRequest(
@@ -991,7 +1031,7 @@ NEVER output an empty response.
       console.error(
         'Arnaru API error:',
         arnaruResponse.status,
-        errorText
+        errorText.slice(0, 1000)
       );
 
       return res
@@ -1009,45 +1049,23 @@ NEVER output an empty response.
         });
     }
 
-    let rawText =
-      await arnaruResponse.text();
-
-    let parsed =
-      parseSSE(rawText);
-
-    /*
-     * If upstream returned an error with no content.
-     */
-    if (
-      parsed.hasError &&
-      !parsed.fullMessage
-    ) {
-      return res
-        .status(500)
-        .json({
-          error: {
-            message:
-              parsed.errorMessage ||
-              'Unknown Arnaru error',
-
-            type:
-              'api_error'
-          }
-        });
-    }
-
-    /*
-     * Parse native/fallback tool calls.
-     */
-    let toolCalls =
-      parseToolCalls(
-        parsed.fullMessage,
-        body.tools
+    let {
+      rawText,
+      parsed
+    } =
+      await readArnaruResponse(
+        arnaruResponse
       );
 
     /*
-     * Return tool calls immediately.
+     * TOOL CALL
      */
+    let toolCalls =
+      parseToolCalls(
+        parsed.fullMessage || '',
+        body.tools
+      );
+
     if (
       toolCalls.length
     ) {
@@ -1075,63 +1093,78 @@ NEVER output an empty response.
     }
 
     /*
-     * CRITICAL EMPTY-RESPONSE RECOVERY
+     * If we have a tool result and Arnaru returns
+     * nothing, perform bounded recovery.
      *
-     * If AnyClaw has already returned a tool result
-     * but Arnaru gives us an empty response, ask Arnaru
-     * one more time with an explicit final-answer prompt.
-     *
-     * This is intentionally limited to ONE retry.
+     * This is intentionally limited to 2 attempts.
      */
     if (
       continuation &&
       !parsed.fullMessage?.trim()
     ) {
       console.warn(
-        'Arnaru returned empty after tool result; retrying continuation'
+        '[Arnaru proxy] Empty continuation response; retrying.'
       );
 
-      const retryBody = {
-        ...arnaruBody,
+      const retryPrompts = [
+        [
+          arnaruBody.systemPrompt || '',
+          '',
+          '=== RECOVERY ===',
+          'Your previous response was empty.',
+          'A tool has already completed.',
+          'Read the tool result in the conversation.',
+          'Now provide the final answer to the original user.',
+          'Return plain natural-language text.',
+          'Do not call a tool unless absolutely necessary.',
+          'Never return empty.',
+          '=== END RECOVERY ==='
+        ].join('\n'),
 
-        systemPrompt:
-          `${arnaruBody.systemPrompt || ''}
+        [
+          'The external tool has already finished.',
+          'Continue the original user request from the tool result.',
+          'Give the final answer now.',
+          'Do not return empty.'
+        ].join('\n')
+      ];
 
-FINAL RESPONSE RETRY:
-
-Your previous response was empty.
-
-The tool has already completed.
-
-You MUST now respond to the user.
-
-Do not output an empty message.
-
-If the tool succeeded, explain the result and what you completed.
-
-If the tool failed, explain the failure clearly.
-
-Return plain natural-language assistant text.`
-      };
-
-      arnaruResponse =
-        await callArnaruRequest(
-          retryBody,
-          files
-        );
-
-      if (
-        arnaruResponse.ok
+      for (
+        const recoveryPrompt of retryPrompts
       ) {
+        const retryBody = {
+          ...arnaruBody,
+
+          systemPrompt:
+            recoveryPrompt
+        };
+
+        const retryResponse =
+          await callArnaruRequest(
+            retryBody,
+            files
+          );
+
+        if (
+          !retryResponse.ok
+        ) {
+          continue;
+        }
+
+        const retryParsed =
+          await readArnaruResponse(
+            retryResponse
+          );
+
         rawText =
-          await arnaruResponse.text();
+          retryParsed.rawText;
 
         parsed =
-          parseSSE(rawText);
+          retryParsed.parsed;
 
         toolCalls =
           parseToolCalls(
-            parsed.fullMessage,
+            parsed.fullMessage || '',
             body.tools
           );
 
@@ -1160,15 +1193,40 @@ Return plain natural-language assistant text.`
             .status(200)
             .json(completion);
         }
+
+        if (
+          parsed.fullMessage?.trim()
+        ) {
+          break;
+        }
       }
     }
 
     /*
-     * NORMAL STREAM
+     * Upstream error.
      */
     if (
-      body.stream
+      parsed.hasError &&
+      !parsed.fullMessage?.trim()
     ) {
+      return res
+        .status(502)
+        .json({
+          error: {
+            message:
+              parsed.errorMessage ||
+              'Arnaru returned an upstream error',
+
+            type:
+              'upstream_error'
+          }
+        });
+    }
+
+    /*
+     * STREAMING
+     */
+    if (body.stream) {
       res.setHeader(
         'Content-Type',
         'text/event-stream'
@@ -1176,7 +1234,7 @@ Return plain natural-language assistant text.`
 
       res.setHeader(
         'Cache-Control',
-        'no-cache'
+        'no-cache, no-transform'
       );
 
       res.setHeader(
@@ -1202,9 +1260,7 @@ Return plain natural-language assistant text.`
 
       for (
         const chunk of
-        parseSSEStream(
-          rawText
-        )
+        parseSSEStream(rawText)
       ) {
         if (
           chunk.error
@@ -1251,30 +1307,51 @@ Return plain natural-language assistant text.`
       return res.end();
     }
 
+    /*
+     * NORMAL RESPONSE
+     */
     const finalContent =
       parsed.fullMessage?.trim() ||
       '';
 
     /*
-     * We do NOT fabricate a fake model answer.
-     *
-     * If the upstream still gives empty after
-     * the recovery attempt, expose a diagnostic
-     * instead of silently returning "".
+     * Do not silently return an empty string.
+     * This is especially useful while debugging the
+     * AnyClaw -> tool -> Arnaru continuation chain.
      */
-    const safeContent =
-      finalContent ||
-      (
-        continuation
-          ? 'The tool completed, but the model did not return a final response.'
-          : ''
-      );
+    if (!finalContent) {
+      if (continuation) {
+        console.error(
+          '[Arnaru proxy] Final response remained empty after recovery.'
+        );
+
+        return res
+          .status(502)
+          .json({
+            error: {
+              message:
+                makeDiagnostic(
+                  parsed
+                ),
+
+              type:
+                'empty_upstream_response'
+            }
+          });
+      }
+
+      /*
+       * For an ordinary empty upstream response,
+       * preserve OpenAI-compatible behavior rather
+       * than inventing content.
+       */
+    }
 
     const completion =
       createCompletion(
         requestId,
         model,
-        safeContent
+        finalContent
       );
 
     res.setHeader(
