@@ -6,7 +6,7 @@ export interface OpenAITextPart {
 export interface OpenAIImageUrlPart {
   type: 'image_url';
   image_url: {
-    url: string; // data:<mime>;base64,<data>  atau  http(s)://...
+    url: string;
     detail?: string;
   };
 }
@@ -15,16 +15,43 @@ export interface OpenAIFilePart {
   type: 'file';
   file: {
     filename?: string;
-    file_data?: string; // data:<mime>;base64,<data>
+    file_data?: string;
     file_id?: string;
   };
 }
 
-export type OpenAIContentPart = OpenAITextPart | OpenAIImageUrlPart | OpenAIFilePart;
+export type OpenAIContentPart =
+  | OpenAITextPart
+  | OpenAIImageUrlPart
+  | OpenAIFilePart;
+
+export interface OpenAITool {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
 
 export interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string | OpenAIContentPart[];
+  role: 'system' | 'user' | 'assistant' | 'tool';
+
+  content:
+    | string
+    | null
+    | OpenAIContentPart[];
+
+  tool_call_id?: string;
+
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
 }
 
 export interface ArnaruFileAttachment {
@@ -40,6 +67,26 @@ export interface OpenAIChatRequest {
   conversationId?: string;
   webSearch?: boolean;
   systemPrompt?: string;
+
+  tools?: OpenAITool[];
+
+  tool_choice?:
+    | 'auto'
+    | 'none'
+    | 'required'
+    | Record<string, unknown>;
+}
+
+export interface OpenAIModel {
+  id: string;
+  object: 'model';
+  created: number;
+  owned_by: string;
+}
+
+export interface OpenAIModelsResponse {
+  object: 'list';
+  data: OpenAIModel[];
 }
 
 export interface OpenAIChatResponse {
@@ -47,12 +94,33 @@ export interface OpenAIChatResponse {
   object: string;
   created: number;
   model: string;
+
   choices: Array<{
     index: number;
+
     message?: OpenAIMessage;
-    delta?: { role?: string; content?: string };
-    finish_reason: string | null;
+
+    delta?: {
+      role?: string;
+      content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        type?: 'function';
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
+    };
+
+    finish_reason:
+      | 'stop'
+      | 'tool_calls'
+      | 'length'
+      | null;
   }>;
+
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -74,9 +142,16 @@ export interface ArnaruSSEData {
   generated_text?: string;
   conversationId?: string;
   error?: string;
+
   choices?: Array<{
-    delta?: { content?: string };
-    message?: { content?: string };
+    delta?: {
+      content?: string;
+    };
+
+    message?: {
+      content?: string;
+    };
+
     text?: string;
   }>;
 }
