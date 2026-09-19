@@ -227,12 +227,17 @@ export async function extractMessageContent(
     if (msg.role === 'tool') {
       hasToolResult = true;
 
-      const result =
+      let result =
         typeof msg.content === 'string'
           ? msg.content
           : JSON.stringify(
               msg.content ?? ''
             );
+
+      // KUNCI FIX: Potong output shell yang raksasa biar context window gak meledak
+      if (result.length > 6000) {
+        result = result.substring(0, 6000) + '\n\n... [OUTPUT TRUNCATED DUE TO LENGTH - PLEASE CONTINUE] ...';
+      }
 
       const callId =
         msg.tool_call_id ||
@@ -431,10 +436,9 @@ export async function extractMessageContent(
 
   let question = parts.join('\n\n').trim();
 
-  // INI MAGIC FIX-NYA: Kita selipin notes ke AI tepat di bagian akhir prompt "question" 
-  // biar dia terpaksa respon ngebaca result tool, tanpa ngerusak pattern regex lu.
+  // KUNCI FIX KEDUA: Trigger murni dari sudut pandang User buat maksa AI jawab
   if (hasToolResult) {
-    question += '\n\n[System Note: The tool execution is finished. Please read the tool result above and generate your final response immediately. Do not output an empty response.]';
+    question += '\n\nUser: The tool execution is finished. Please read the tool result above and answer my original request in natural language. Do not return an empty response.';
   }
 
   return {
