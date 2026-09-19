@@ -29,10 +29,13 @@ const MIME_EXT_MAP: Record<string, string> = {
   'text/csv': 'csv',
   'application/json': 'json',
   'application/msword': 'doc',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx'
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    'docx'
 };
 
-function guessExtension(mimeType: string): string {
+function guessExtension(
+  mimeType: string
+): string {
   return (
     MIME_EXT_MAP[mimeType] ||
     (mimeType.split('/')[1] || 'bin')
@@ -46,12 +49,13 @@ function parseDataUri(
   mimeType: string;
   buffer: Buffer;
 } | null {
-  const match =
-    uri.match(
-      /^data:([^;,]+);base64,(.+)$/s
-    );
+  const match = uri.match(
+    /^data:([^;,]+);base64,(.+)$/s
+  );
 
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
 
   return {
     mimeType: match[1],
@@ -69,28 +73,27 @@ async function fetchAsBuffer(
   buffer: Buffer;
 } | null> {
   try {
-    const resp =
-      await fetch(url);
+    const resp = await fetch(url);
 
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      return null;
+    }
 
-    const mimeType =
-      (
-        resp.headers.get(
-          'content-type'
-        ) ||
-        'application/octet-stream'
-      )
-        .split(';')[0]
-        .trim();
+    const mimeType = (
+      resp.headers.get(
+        'content-type'
+      ) ||
+      'application/octet-stream'
+    )
+      .split(';')[0]
+      .trim();
 
     const arrayBuf =
       await resp.arrayBuffer();
 
     return {
       mimeType,
-      buffer:
-        Buffer.from(arrayBuf)
+      buffer: Buffer.from(arrayBuf)
     };
   } catch {
     return null;
@@ -100,10 +103,10 @@ async function fetchAsBuffer(
 async function resolveAttachment(
   url: string,
   filenameHint?: string
-): Promise<
-  ArnaruFileAttachment | null
-> {
-  if (!url) return null;
+): Promise<ArnaruFileAttachment | null> {
+  if (!url) {
+    return null;
+  }
 
   let resolved:
     | {
@@ -113,13 +116,11 @@ async function resolveAttachment(
     | null = null;
 
   if (url.startsWith('data:')) {
-    resolved =
-      parseDataUri(url);
+    resolved = parseDataUri(url);
   } else if (
     /^https?:\/\//i.test(url)
   ) {
-    resolved =
-      await fetchAsBuffer(url);
+    resolved = await fetchAsBuffer(url);
   }
 
   if (
@@ -129,10 +130,9 @@ async function resolveAttachment(
     return null;
   }
 
-  const ext =
-    guessExtension(
-      resolved.mimeType
-    );
+  const ext = guessExtension(
+    resolved.mimeType
+  );
 
   const filename =
     filenameHint ||
@@ -143,11 +143,14 @@ async function resolveAttachment(
   return {
     buffer: resolved.buffer,
     filename,
-    mimeType:
-      resolved.mimeType
+    mimeType: resolved.mimeType
   };
 }
 
+/**
+ * Convert assistant tool calls into deterministic
+ * text that the Arnaru model can understand.
+ */
 function stringifyToolCalls(
   msg: OpenAIMessage
 ): string {
@@ -159,13 +162,31 @@ function stringifyToolCalls(
   }
 
   return msg.tool_calls
-    .map(
-      call =>
-        `[Tool call: ${call.function.name}(${call.function.arguments})]`
-    )
-    .join('\n');
+    .map(call => {
+      const name =
+        call.function?.name || 'unknown';
+
+      const args =
+        call.function?.arguments || '{}';
+
+      return [
+        `Assistant requested tool: ${name}`,
+        `Tool call ID: ${call.id}`,
+        `Arguments: ${args}`
+      ].join('\n');
+    })
+    .join('\n\n');
 }
 
+/**
+ * Extract OpenAI messages into the simple
+ * question/systemPrompt contract expected by Arnaru.
+ *
+ * Important:
+ * tool results are preserved and explicitly marked.
+ * This is what allows the second model pass to
+ * continue after AnyClaw executes a tool.
+ */
 export async function extractMessageContent(
   messages: OpenAIMessage[]
 ): Promise<{
@@ -177,33 +198,92 @@ export async function extractMessageContent(
 
   const parts: string[] = [];
 
-  const files:
-    ArnaruFileAttachment[] = [];
+  const files: ArnaruFileAttachment[] = [];
+
+  let hasToolResult = false;
 
   for (const msg of messages) {
+    /*
+     * SYSTEM
+     */
+    if (msg.role === 'system') {
+      if (
+        typeof msg.content === 'string'
+      ) {
+        if (msg.content.trim()) {
+          systemPrompt =
+            systemPrompt
+              ? `${systemPrompt}\n\n${msg.content}`
+              : msg.content;
+        }
+      } else {
+        const textFragments: string[] = [];
+
+        for (
+          const part of
+          (msg.content as OpenAIContentPart[]) ||
+          []
+        ) {
+          if (
+            part &&
+            typeof part === 'object' &&
+            part.type === 'text' &&
+            part.text
+          ) {
+            textFragments.push(
+              part.text
+            );
+          }
+        }
+
+        const text =
+          textFragments.join('\n').trim();
+
+        if (text) {
+          systemPrompt =
+            systemPrompt
+              ? `${systemPrompt}\n\n${text}`
+              : text;
+        }
+      }
+
+      continue;
+    }
 
     /*
      * TOOL RESULT
      *
-     * This was previously discarded.
+     * This is critical for the second pass.
      */
     if (msg.role === 'tool') {
+      hasToolResult = true;
+
       const result =
         typeof msg.content === 'string'
           ? msg.content
           : JSON.stringify(
-              msg.content || ''
+              msg.content ?? ''
             );
 
+      const callId =
+        msg.tool_call_id ||
+        'unknown';
+
       parts.push(
-        `Tool result (${msg.tool_call_id || 'unknown'}):\n${result}`
+        [
+          '=== TOOL RESULT ===',
+          `Tool call ID: ${callId}`,
+          'Result:',
+          result,
+          '=== END TOOL RESULT ==='
+        ].join('\n')
       );
 
       continue;
     }
 
     /*
-     * ASSISTANT TOOL CALL
+     * ASSISTANT MESSAGE WITH TOOL CALLS
      */
     if (
       msg.role === 'assistant' &&
@@ -211,7 +291,7 @@ export async function extractMessageContent(
     ) {
       const text =
         typeof msg.content === 'string'
-          ? msg.content
+          ? msg.content.trim()
           : '';
 
       if (text) {
@@ -231,28 +311,27 @@ export async function extractMessageContent(
     }
 
     /*
-     * Normal string content.
+     * NORMAL STRING CONTENT
      */
     if (
-      typeof msg.content ===
-      'string'
+      typeof msg.content === 'string'
     ) {
-      if (
-        msg.role === 'system'
-      ) {
-        systemPrompt =
-          msg.content;
-      } else if (
-        msg.role === 'user'
-      ) {
+      const text =
+        msg.content.trim();
+
+      if (!text) {
+        continue;
+      }
+
+      if (msg.role === 'user') {
         parts.push(
-          `User: ${msg.content}`
+          `User: ${text}`
         );
       } else if (
         msg.role === 'assistant'
       ) {
         parts.push(
-          `Assistant: ${msg.content}`
+          `Assistant: ${text}`
         );
       }
 
@@ -260,10 +339,9 @@ export async function extractMessageContent(
     }
 
     /*
-     * Multimodal content.
+     * MULTIMODAL CONTENT
      */
-    const textFragments:
-      string[] = [];
+    const textFragments: string[] = [];
 
     for (
       const part of
@@ -290,8 +368,7 @@ export async function extractMessageContent(
         msg.role === 'user'
       ) {
         if (
-          files.length >=
-          MAX_FILES
+          files.length >= MAX_FILES
         ) {
           continue;
         }
@@ -302,17 +379,14 @@ export async function extractMessageContent(
           );
 
         if (attachment) {
-          files.push(
-            attachment
-          );
+          files.push(attachment);
         }
       } else if (
         part.type === 'file' &&
         msg.role === 'user'
       ) {
         if (
-          files.length >=
-          MAX_FILES
+          files.length >= MAX_FILES
         ) {
           continue;
         }
@@ -328,9 +402,7 @@ export async function extractMessageContent(
             );
 
           if (attachment) {
-            files.push(
-              attachment
-            );
+            files.push(attachment);
           }
         }
       }
@@ -341,13 +413,11 @@ export async function extractMessageContent(
         .join('\n')
         .trim();
 
-    if (
-      msg.role === 'system'
-    ) {
-      systemPrompt = text;
-    } else if (
-      msg.role === 'user'
-    ) {
+    if (!text) {
+      continue;
+    }
+
+    if (msg.role === 'user') {
       parts.push(
         `User: ${text}`
       );
@@ -360,11 +430,33 @@ export async function extractMessageContent(
     }
   }
 
+  /*
+   * When AnyClaw has just returned a tool result,
+   * explicitly tell the model to continue.
+   *
+   * Without this, some upstream models stop after
+   * the tool call and return an empty completion.
+   */
+  if (hasToolResult) {
+    parts.push(
+      [
+        '=== AGENT CONTINUATION ===',
+        'A previously requested tool has finished executing.',
+        'The tool result above is real and must be used.',
+        'Continue the original user task now.',
+        'If the task is complete, respond to the user in natural language.',
+        'Explain what happened and what was done.',
+        'If another tool is required, request it using the available tool format.',
+        'NEVER return an empty response.',
+        'Do not merely repeat the tool result.',
+        '=== END AGENT CONTINUATION ==='
+      ].join('\n')
+    );
+  }
+
   const question =
     parts.length === 1 &&
-    parts[0].startsWith(
-      'User: '
-    )
+    parts[0].startsWith('User: ')
       ? parts[0].slice(6)
       : parts.join('\n\n');
 
@@ -393,6 +485,7 @@ export async function buildArnaruRequest(
 
   const arnaruBody = {
     question,
+
     model:
       body.model ||
       DEFAULT_MODEL,
