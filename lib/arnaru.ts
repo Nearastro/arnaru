@@ -153,12 +153,19 @@ function stringifyToolCalls(
       const id = call.id || 'unknown';
 
       return [
-        `\n[Assistant executed tool: ${name}]`,
-        `Tool Call ID: ${id}`,
-        `Arguments: ${args}`
+        '```json',
+        JSON.stringify({
+          type: "tool_call",
+          tool_call_id: id,
+          function: {
+            name: name,
+            arguments: args
+          }
+        }, null, 2),
+        '```'
       ].join('\n');
     })
-    .join('\n');
+    .join('\n\n');
 }
 
 export async function extractMessageContent(
@@ -176,7 +183,7 @@ export async function extractMessageContent(
   for (const msg of messages) {
     if (!msg) continue;
 
-    /* SYSTEM */
+    // --- SYSTEM PROMPT ---
     if (msg.role === 'system') {
       let text = '';
       if (typeof msg.content === 'string') {
@@ -190,31 +197,29 @@ export async function extractMessageContent(
         }
         text = fragments.join('\n').trim();
       }
+
       if (text) {
         systemPrompt = systemPrompt ? `${systemPrompt}\n\n${text}` : text;
       }
       continue;
     }
 
-    /* TOOL RESULT */
+    // --- TOOL RESULT ---
     if (msg.role === 'tool') {
       hasToolResult = true;
       const result = typeof msg.content === 'string'
-          ? msg.content
-          : JSON.stringify(msg.content ?? '');
+        ? msg.content
+        : JSON.stringify(msg.content ?? '');
+      
       const callId = msg.tool_call_id || 'unknown';
 
       parts.push(
-        [
-          `\n[Tool Result for ID: ${callId}]`,
-          result,
-          `[End of Tool Result]`
-        ].join('\n')
+        `Tool Result [ID: ${callId}]:\n\`\`\`\n${result}\n\`\`\``
       );
       continue;
     }
 
-    /* ASSISTANT TOOL CALL */
+    // --- ASSISTANT TOOL CALL ---
     if (msg.role === 'assistant' && msg.tool_calls?.length) {
       const assistantText = typeof msg.content === 'string' ? msg.content.trim() : '';
       if (assistantText) {
@@ -222,12 +227,12 @@ export async function extractMessageContent(
       }
       const calls = stringifyToolCalls(msg);
       if (calls) {
-        parts.push(calls);
+        parts.push(`Assistant invoked tool(s):\n${calls}`);
       }
       continue;
     }
 
-    /* STRING MESSAGE */
+    // --- NORMAL STRING MESSAGE ---
     if (typeof msg.content === 'string') {
       const text = msg.content.trim();
       if (!text) continue;
@@ -240,7 +245,7 @@ export async function extractMessageContent(
       continue;
     }
 
-    /* MULTIMODAL MESSAGE */
+    // --- MULTIMODAL MESSAGE ---
     const textFragments: string[] = [];
     for (const part of (msg.content as OpenAIContentPart[]) || []) {
       if (!part || typeof part !== 'object') continue;
@@ -249,6 +254,7 @@ export async function extractMessageContent(
         if (part.text) textFragments.push(part.text);
         continue;
       }
+
       if (part.type === 'image_url' && msg.role === 'user') {
         if (files.length >= MAX_FILES) continue;
         const url = part.image_url?.url;
@@ -257,6 +263,7 @@ export async function extractMessageContent(
         if (attachment) files.push(attachment);
         continue;
       }
+
       if (part.type === 'file' && msg.role === 'user') {
         if (files.length >= MAX_FILES) continue;
         const fileData = part.file?.file_data;
@@ -268,6 +275,7 @@ export async function extractMessageContent(
 
     const text = textFragments.join('\n').trim();
     if (!text) continue;
+
     if (msg.role === 'user') {
       parts.push(`User: ${text}`);
     } else if (msg.role === 'assistant') {
@@ -275,13 +283,12 @@ export async function extractMessageContent(
     }
   }
 
-  // Trik utama biar AI nggak bales string kosong:
-  // Kita inject instruksi pura-pura dari user di akhir question string.
+  // --- THE CRITICAL CONTINUATION INJECTION ---
+  // Jika history terakhir berisi tool result, kita harus inject prompt User buatan
+  // agar AI terpancing membalas dan tidak mengeluarkan string kosong.
   if (hasToolResult) {
     parts.push(
-      '\nUser: Tool execution is complete and the results are provided above. ' +
-      'Please analyze the tool results and provide a natural language response answering my original request. ' +
-      'Do not output another tool call unless completely necessary. Start your answer directly.'
+      `User: I have provided the tool results above. Please read them carefully and formulate a comprehensive final response to my original request. Start your answer immediately. Do NOT output a blank response.`
     );
   }
 
@@ -300,7 +307,11 @@ export async function buildArnaruRequest(
   arnaruBody: any;
   files: ArnaruFileAttachment[];
 }> {
-  const { question, systemPrompt, files } = await extractMessageContent(body.messages);
+  const {
+    question,
+    systemPrompt,
+    files
+  } = await extractMessageContent(body.messages);
 
   return {
     arnaruBody: {
@@ -314,7 +325,9 @@ export async function buildArnaruRequest(
   };
 }
 
-export async function callArnaruChat(requestBody: any): Promise<Response> {
+export async function callArnaruChat(
+  requestBody: any
+): Promise<Response> {
   return fetch(`${ARNARU_BASE_URL}/api/chat`, {
     method: 'POST',
     headers: {
@@ -331,10 +344,18 @@ export async function callArnaruChatWithFiles(
   const formData = new FormData();
   formData.append('question', requestBody.question ?? '');
 
-  if (requestBody.model) formData.append('model', requestBody.model);
-  if (requestBody.conversationId) formData.append('conversationId', requestBody.conversationId);
-  if (requestBody.webSearch !== undefined) formData.append('webSearch', String(requestBody.webSearch));
-  if (requestBody.systemPrompt) formData.append('systemPrompt', requestBody.systemPrompt);
+  if (requestBody.model) {
+    formData.append('model', requestBody.model);
+  }
+  if (requestBody.conversationId) {
+    formData.append('conversationId', requestBody.conversationId);
+  }
+  if (requestBody.webSearch !== undefined) {
+    formData.append('webSearch', String(requestBody.webSearch));
+  }
+  if (requestBody.systemPrompt) {
+    formData.append('systemPrompt', requestBody.systemPrompt);
+  }
 
   for (const file of files.slice(0, MAX_FILES)) {
     const blob = new Blob([new Uint8Array(file.buffer)], { type: file.mimeType });
