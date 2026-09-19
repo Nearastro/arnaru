@@ -34,6 +34,15 @@ export interface OpenAITool {
   };
 }
 
+export interface OpenAIToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 export interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
 
@@ -44,14 +53,7 @@ export interface OpenAIMessage {
 
   tool_call_id?: string;
 
-  tool_calls?: Array<{
-    id: string;
-    type: 'function';
-    function: {
-      name: string;
-      arguments: string;
-    };
-  }>;
+  tool_calls?: OpenAIToolCall[];
 }
 
 export interface ArnaruFileAttachment {
@@ -77,18 +79,6 @@ export interface OpenAIChatRequest {
     | Record<string, unknown>;
 }
 
-export interface OpenAIModel {
-  id: string;
-  object: 'model';
-  created: number;
-  owned_by: string;
-}
-
-export interface OpenAIModelsResponse {
-  object: 'list';
-  data: OpenAIModel[];
-}
-
 export interface OpenAIChatResponse {
   id: string;
   object: string;
@@ -103,22 +93,10 @@ export interface OpenAIChatResponse {
     delta?: {
       role?: string;
       content?: string | null;
-      tool_calls?: Array<{
-        index?: number;
-        id?: string;
-        type?: 'function';
-        function?: {
-          name?: string;
-          arguments?: string;
-        };
-      }>;
+      tool_calls?: OpenAIToolCall[];
     };
 
-    finish_reason:
-      | 'stop'
-      | 'tool_calls'
-      | 'length'
-      | null;
+    finish_reason: string | null;
   }>;
 
   usage?: {
