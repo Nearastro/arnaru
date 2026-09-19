@@ -33,13 +33,10 @@ const MIME_EXT_MAP: Record<string, string> = {
     'docx'
 };
 
-function guessExtension(
-  mimeType: string
-): string {
+function guessExtension(mimeType: string): string {
   return (
     MIME_EXT_MAP[mimeType] ||
-    (mimeType.split('/')[1] || 'bin')
-      .split('+')[0]
+    (mimeType.split('/')[1] || 'bin').split('+')[0]
   );
 }
 
@@ -59,10 +56,7 @@ function parseDataUri(
 
   return {
     mimeType: match[1],
-    buffer: Buffer.from(
-      match[2],
-      'base64'
-    )
+    buffer: Buffer.from(match[2], 'base64')
   };
 }
 
@@ -80,16 +74,13 @@ async function fetchAsBuffer(
     }
 
     const mimeType = (
-      resp.headers.get(
-        'content-type'
-      ) ||
+      resp.headers.get('content-type') ||
       'application/octet-stream'
     )
       .split(';')[0]
       .trim();
 
-    const arrayBuf =
-      await resp.arrayBuffer();
+    const arrayBuf = await resp.arrayBuffer();
 
     return {
       mimeType,
@@ -117,9 +108,7 @@ async function resolveAttachment(
 
   if (url.startsWith('data:')) {
     resolved = parseDataUri(url);
-  } else if (
-    /^https?:\/\//i.test(url)
-  ) {
+  } else if (/^https?:\/\//i.test(url)) {
     resolved = await fetchAsBuffer(url);
   }
 
@@ -148,8 +137,11 @@ async function resolveAttachment(
 }
 
 /**
- * Convert assistant tool calls into deterministic
- * text that the Arnaru model can understand.
+ * Convert native OpenAI tool calls into deterministic
+ * text that the Arnaru upstream can understand.
+ *
+ * Keep this format stable because the following tool
+ * result will be attached to the same conversation.
  */
 function stringifyToolCalls(
   msg: OpenAIMessage
@@ -169,23 +161,33 @@ function stringifyToolCalls(
       const args =
         call.function?.arguments || '{}';
 
+      const id =
+        call.id || 'unknown';
+
       return [
-        `Assistant requested tool: ${name}`,
-        `Tool call ID: ${call.id}`,
-        `Arguments: ${args}`
+        '=== TOOL CALL ===',
+        `name: ${name}`,
+        `tool_call_id: ${id}`,
+        `arguments: ${args}`,
+        '=== END TOOL CALL ==='
       ].join('\n');
     })
     .join('\n\n');
 }
 
 /**
- * Extract OpenAI messages into the simple
+ * Convert an OpenAI message history into the simple
  * question/systemPrompt contract expected by Arnaru.
  *
- * Important:
- * tool results are preserved and explicitly marked.
- * This is what allows the second model pass to
- * continue after AnyClaw executes a tool.
+ * The important part is preserving the chronological
+ * chain:
+ *
+ * user
+ * assistant tool call
+ * tool result
+ * continuation
+ *
+ * rather than collecting all tool results separately.
  */
 export async function extractMessageContent(
   messages: OpenAIMessage[]
@@ -197,27 +199,27 @@ export async function extractMessageContent(
   let systemPrompt = '';
 
   const parts: string[] = [];
-
   const files: ArnaruFileAttachment[] = [];
 
   let hasToolResult = false;
 
   for (const msg of messages) {
+    if (!msg) {
+      continue;
+    }
+
     /*
      * SYSTEM
      */
     if (msg.role === 'system') {
+      let text = '';
+
       if (
         typeof msg.content === 'string'
       ) {
-        if (msg.content.trim()) {
-          systemPrompt =
-            systemPrompt
-              ? `${systemPrompt}\n\n${msg.content}`
-              : msg.content;
-        }
+        text = msg.content.trim();
       } else {
-        const textFragments: string[] = [];
+        const fragments: string[] = [];
 
         for (
           const part of
@@ -230,21 +232,17 @@ export async function extractMessageContent(
             part.type === 'text' &&
             part.text
           ) {
-            textFragments.push(
-              part.text
-            );
+            fragments.push(part.text);
           }
         }
 
-        const text =
-          textFragments.join('\n').trim();
+        text = fragments.join('\n').trim();
+      }
 
-        if (text) {
-          systemPrompt =
-            systemPrompt
-              ? `${systemPrompt}\n\n${text}`
-              : text;
-        }
+      if (text) {
+        systemPrompt = systemPrompt
+          ? `${systemPrompt}\n\n${text}`
+          : text;
       }
 
       continue;
@@ -253,7 +251,7 @@ export async function extractMessageContent(
     /*
      * TOOL RESULT
      *
-     * This is critical for the second pass.
+     * Keep it directly in chronological order.
      */
     if (msg.role === 'tool') {
       hasToolResult = true;
@@ -272,8 +270,8 @@ export async function extractMessageContent(
       parts.push(
         [
           '=== TOOL RESULT ===',
-          `Tool call ID: ${callId}`,
-          'Result:',
+          `tool_call_id: ${callId}`,
+          'result:',
           result,
           '=== END TOOL RESULT ==='
         ].join('\n')
@@ -283,20 +281,20 @@ export async function extractMessageContent(
     }
 
     /*
-     * ASSISTANT MESSAGE WITH TOOL CALLS
+     * ASSISTANT TOOL CALL
      */
     if (
       msg.role === 'assistant' &&
       msg.tool_calls?.length
     ) {
-      const text =
+      const assistantText =
         typeof msg.content === 'string'
           ? msg.content.trim()
           : '';
 
-      if (text) {
+      if (assistantText) {
         parts.push(
-          `Assistant: ${text}`
+          `Assistant: ${assistantText}`
         );
       }
 
@@ -311,7 +309,7 @@ export async function extractMessageContent(
     }
 
     /*
-     * NORMAL STRING CONTENT
+     * STRING MESSAGE
      */
     if (
       typeof msg.content === 'string'
@@ -339,7 +337,7 @@ export async function extractMessageContent(
     }
 
     /*
-     * MULTIMODAL CONTENT
+     * MULTIMODAL MESSAGE
      */
     const textFragments: string[] = [];
 
@@ -363,7 +361,11 @@ export async function extractMessageContent(
             part.text
           );
         }
-      } else if (
+
+        continue;
+      }
+
+      if (
         part.type === 'image_url' &&
         msg.role === 'user'
       ) {
@@ -373,15 +375,26 @@ export async function extractMessageContent(
           continue;
         }
 
+        const url =
+          part.image_url?.url;
+
+        if (!url) {
+          continue;
+        }
+
         const attachment =
           await resolveAttachment(
-            part.image_url?.url
+            url
           );
 
         if (attachment) {
           files.push(attachment);
         }
-      } else if (
+
+        continue;
+      }
+
+      if (
         part.type === 'file' &&
         msg.role === 'user'
       ) {
@@ -394,16 +407,18 @@ export async function extractMessageContent(
         const fileData =
           part.file?.file_data;
 
-        if (fileData) {
-          const attachment =
-            await resolveAttachment(
-              fileData,
-              part.file?.filename
-            );
+        if (!fileData) {
+          continue;
+        }
 
-          if (attachment) {
-            files.push(attachment);
-          }
+        const attachment =
+          await resolveAttachment(
+            fileData,
+            part.file?.filename
+          );
+
+        if (attachment) {
+          files.push(attachment);
         }
       }
     }
@@ -431,34 +446,46 @@ export async function extractMessageContent(
   }
 
   /*
-   * When AnyClaw has just returned a tool result,
-   * explicitly tell the model to continue.
+   * IMPORTANT:
    *
-   * Without this, some upstream models stop after
-   * the tool call and return an empty completion.
+   * Don't put the continuation instruction into
+   * the user question itself. Keep it in the
+   * system prompt so Arnaru can distinguish:
+   *
+   * original task
+   * tool history
+   * instruction to continue
    */
   if (hasToolResult) {
-    parts.push(
-      [
-        '=== AGENT CONTINUATION ===',
-        'A previously requested tool has finished executing.',
-        'The tool result above is real and must be used.',
-        'Continue the original user task now.',
-        'If the task is complete, respond to the user in natural language.',
-        'Explain what happened and what was done.',
-        'If another tool is required, request it using the available tool format.',
-        'NEVER return an empty response.',
-        'Do not merely repeat the tool result.',
-        '=== END AGENT CONTINUATION ==='
-      ].join('\n')
-    );
+    systemPrompt = [
+      systemPrompt,
+      '',
+      '=== AGENT CONTINUATION ===',
+      'A previously requested external tool has finished.',
+      'The tool result is present in the conversation history.',
+      'Continue the ORIGINAL user request from that result.',
+      '',
+      'Rules:',
+      '- Treat the tool result as factual context.',
+      '- Do not invent a tool result.',
+      '- If the task is complete, answer normally.',
+      '- If another tool is genuinely necessary, request it.',
+      '- Never return an empty response.',
+      '- Never say you are waiting for a tool if a tool result is already present.',
+      '=== END AGENT CONTINUATION ==='
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
+  /*
+   * IMPORTANT:
+   *
+   * Never collapse a multi-turn agent history into
+   * only the final tool result.
+   */
   const question =
-    parts.length === 1 &&
-    parts[0].startsWith('User: ')
-      ? parts[0].slice(6)
-      : parts.join('\n\n');
+    parts.join('\n\n').trim();
 
   return {
     question,
@@ -483,27 +510,26 @@ export async function buildArnaruRequest(
       body.messages
     );
 
-  const arnaruBody = {
-    question,
-
-    model:
-      body.model ||
-      DEFAULT_MODEL,
-
-    conversationId:
-      body.conversationId,
-
-    webSearch:
-      body.webSearch ??
-      DEFAULT_WEB_SEARCH,
-
-    systemPrompt:
-      body.systemPrompt ||
-      systemPrompt
-  };
-
   return {
-    arnaruBody,
+    arnaruBody: {
+      question,
+
+      model:
+        body.model ||
+        DEFAULT_MODEL,
+
+      conversationId:
+        body.conversationId,
+
+      webSearch:
+        body.webSearch ??
+        DEFAULT_WEB_SEARCH,
+
+      systemPrompt:
+        body.systemPrompt ||
+        systemPrompt
+    },
+
     files
   };
 }
