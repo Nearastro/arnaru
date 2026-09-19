@@ -1,159 +1,178 @@
-import type {
-  VercelRequest,
-  VercelResponse
-} from '@vercel/node';
-
-import type {
-  OpenAIChatRequest,
-  OpenAITool,
-  OpenAIToolCall
-} from '../../../lib/types';
-
 import {
-  parseSSE,
-  parseSSEStream
-} from '../../../lib/sse-parser';
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
 import {
   buildArnaruRequest,
   callArnaruChat,
   callArnaruChatWithFiles,
-  generateId,
-  getTimestamp
-} from '../../../lib/arnaru';
+  hasToolCall,
+  hasToolResult,
+  updateArnaruSession,
+  markArnaruFailure,
+  type ArnaruMessage,
+} from "@/lib/arnaru";
 
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '10mb'
-    }
-  }
-};
+/* =========================================================
+ * Models
+ * ========================================================= */
 
 const VALID_MODELS = new Set([
-  'claude-fable-5',
-  'claude-haiku-4.5',
-  'claude-opus-4.6',
-  'claude-opus-4.7',
-  'claude-opus-4.8',
-  'claude-sonnet-4',
-  'claude-sonnet-4.6',
-  'claude-sonnet-5',
-  'deepseek-r1',
-  'deepseek-v3.1',
-  'deepseek-v3.2',
-  'deepseek-v3.2-online',
-  'deepseek-v3.2-think',
-  'deepseek-v4-flash',
-  'deepseek-v4-pro',
-  'gemini-2.0-flash',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-3-flash',
-  'gemini-3-pro',
-  'gemini-3.1-flash',
-  'gemini-3.1-pro',
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.6-flash',
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4o',
-  'gpt-5',
-  'gpt-5-mini',
-  'gpt-5-nano',
-  'gpt-5.1',
-  'gpt-5.2',
-  'gpt-5.4',
-  'gpt-5.5',
-  'gpt-5.6-luna',
-  'gpt-5.6-sol',
-  'gpt-o3-mini',
-  'grok-3',
-  'grok-3-reasoner',
-  'grok-4',
-  'grok-4-fast',
-  'grok-4-reasoning',
-  'grok-4.1',
-  'grok-4.1-fast',
-  'grok-4.1-reasoning',
-  'grok-4.2',
-  'grok-4.2-reasoning',
-  'grok-4.3-pro',
-  'grok-4.3-reasoning',
-  'grok-4.5',
-  'kimi-k3',
-  'llama-4',
-  'llama-4.1',
-  'mistral-small-3.2',
-  'mistral-small-creative',
-  'qwen-vl-max',
-  'qwen3-235b',
-  'qwen3-max',
-  'skylark-pro',
-  'step-3.5-flash',
-  'step-3.5-flash-free'
+  "claude-fable-5",
+  "claude-fable",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5.1",
+  "gpt-5.2",
+  "gpt-5.3",
+  "gpt-5.4",
+  "gemini",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "deepseek",
 ]);
 
-function validateModel(
-  model: string
-): string {
-  return VALID_MODELS.has(model)
-    ? model
-    : (
-        process.env.DEFAULT_MODEL ||
-        'claude-fable-5'
-      );
-}
+/* =========================================================
+ * Types
+ * ========================================================= */
 
-function getToolNames(
-  tools?: OpenAITool[]
-): Set<string> {
-  return new Set(
-    (tools || [])
-      .filter(
-        tool =>
-          tool.type === 'function' &&
-          !!tool.function?.name
-      )
-      .map(
-        tool =>
-          tool.function.name
-      )
+type ChatMessage = ArnaruMessage & {
+  role:
+    | "system"
+    | "user"
+    | "assistant"
+    | "tool";
+
+  content?: any;
+
+  tool_calls?: any[];
+
+  tool_call_id?: string;
+};
+
+type ChatBody = {
+  model?: string;
+
+  messages?: ChatMessage[];
+
+  tools?: any[];
+
+  tool_choice?: any;
+
+  stream?: boolean;
+
+  temperature?: number;
+
+  max_tokens?: number;
+
+  conversationId?: string;
+
+  webSearch?: boolean;
+
+  user?: string;
+
+  session_id?: string;
+};
+
+/* =========================================================
+ * Utility
+ * ========================================================= */
+
+function json(
+  data: unknown,
+  status = 200,
+  headers?: HeadersInit
+) {
+  return NextResponse.json(
+    data,
+    {
+      status,
+      headers,
+    }
   );
 }
 
-function findJsonObjects(
-  text: string
-): string[] {
-  const results: string[] = [];
+function generateId() {
+  return `chatcmpl-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
 
-  const fenced =
-    text.match(
-      /```(?:json)?\s*([\s\S]*?)\s*```/gi
-    );
+function generateToolId() {
+  return `call_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
 
-  if (fenced) {
-    for (
-      const block of fenced
-    ) {
-      const cleaned =
-        block
-          .replace(
-            /^```(?:json)?/i,
-            ''
-          )
-          .replace(
-            /```$/i,
-            ''
-          )
-          .trim();
+function safeString(
+  value: unknown
+): string {
+  if (
+    value === undefined ||
+    value === null
+  ) {
+    return "";
+  }
 
-      if (cleaned) {
-        results.push(cleaned);
-      }
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeArguments(
+  value: unknown
+): string {
+  if (
+    typeof value === "string"
+  ) {
+    const trimmed =
+      value.trim();
+
+    if (!trimmed) {
+      return "{}";
+    }
+
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {
+      return JSON.stringify({
+        input: trimmed,
+      });
     }
   }
+
+  if (
+    value &&
+    typeof value === "object"
+  ) {
+    try {
+      return JSON.stringify(
+        value
+      );
+    } catch {
+      return "{}";
+    }
+  }
+
+  return "{}";
+}
+
+/* =========================================================
+ * Tool parsing
+ * ========================================================= */
+
+function findJsonObjects(
+  text: string
+): any[] {
+  const results: any[] = [];
 
   let depth = 0;
   let start = -1;
@@ -165,48 +184,60 @@ function findJsonObjects(
     i < text.length;
     i++
   ) {
-    const c = text[i];
+    const char =
+      text[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (
+      char === "\\" &&
+      inString
+    ) {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString =
+        !inString;
+      continue;
+    }
 
     if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (
-        c === '\\'
-      ) {
-        escaped = true;
-      } else if (
-        c === '"'
-      ) {
-        inString = false;
-      }
-
       continue;
     }
 
-    if (c === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (c === '{') {
+    if (char === "{") {
       if (depth === 0) {
         start = i;
       }
 
       depth++;
-    } else if (c === '}') {
+    }
+
+    if (char === "}") {
       depth--;
 
       if (
         depth === 0 &&
         start >= 0
       ) {
-        results.push(
+        const candidate =
           text.slice(
             start,
             i + 1
-          )
-        );
+          );
+
+        try {
+          results.push(
+            JSON.parse(
+              candidate
+            )
+          );
+        } catch {}
 
         start = -1;
       }
@@ -216,426 +247,345 @@ function findJsonObjects(
   return results;
 }
 
-function normalizeArguments(
-  value: any
-): Record<string, any> {
-  if (
-    typeof value === 'string'
-  ) {
-    try {
-      const parsed =
-        JSON.parse(value);
-
-      if (
-        parsed &&
-        typeof parsed === 'object'
-      ) {
-        return parsed;
-      }
-    } catch {
-      return {
-        input: value
-      };
-    }
-  }
-
-  if (
-    value &&
-    typeof value === 'object'
-  ) {
-    return value;
-  }
-
-  return {};
-}
-
 function makeToolCall(
-  name: string,
-  args: any,
-  suppliedId?: string
-): OpenAIToolCall {
+  raw: any
+) {
+  const functionData =
+    raw?.function || raw;
+
+  const name =
+    functionData?.name ||
+    raw?.name ||
+    raw?.tool;
+
+  if (
+    typeof name !== "string" ||
+    !name.trim()
+  ) {
+    return null;
+  }
+
+  const args =
+    functionData?.arguments ??
+    functionData?.parameters ??
+    raw?.arguments ??
+    raw?.parameters ??
+    {};
+
   return {
     id:
-      suppliedId ||
-      `call_${generateId()}`,
+      raw?.id ||
+      raw?.tool_call_id ||
+      generateToolId(),
 
-    type: 'function',
+    type: "function",
 
     function: {
-      name,
+      name:
+        name.trim(),
 
       arguments:
-        JSON.stringify(
-          normalizeArguments(args)
-        )
-    }
+        normalizeArguments(
+          args
+        ),
+    },
   };
 }
 
 function parseToolCalls(
-  text: string,
-  tools?: OpenAITool[]
-): OpenAIToolCall[] {
-  const allowed =
-    getToolNames(tools);
-
-  if (!allowed.size) {
+  text: string
+): any[] {
+  if (!text?.trim()) {
     return [];
   }
 
-  const calls: OpenAIToolCall[] = [];
-  const seen = new Set<string>();
-
-  function add(
-    name: any,
-    args: any,
-    id?: any
-  ) {
-    if (
-      typeof name !== 'string' ||
-      !allowed.has(name)
-    ) {
-      return;
-    }
-
-    const normalized =
-      normalizeArguments(args);
-
-    const key =
-      `${name}:${JSON.stringify(normalized)}`;
-
-    if (seen.has(key)) {
-      return;
-    }
-
-    seen.add(key);
-
-    calls.push(
-      makeToolCall(
-        name,
-        normalized,
-        typeof id === 'string'
-          ? id
-          : undefined
-      )
-    );
-  }
+  const calls: any[] = [];
 
   /*
-   * <tool_call>{...}</tool_call>
+   * 1. <tool_call>...</tool_call>
    */
-  const xmlMatches =
-    text.match(
-      /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi
-    );
+  const tagRegex =
+    /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
 
-  if (xmlMatches) {
-    for (
-      const block of xmlMatches
-    ) {
-      const cleaned =
-        block
-          .replace(
-            /^<tool_call>\s*/i,
-            ''
-          )
-          .replace(
-            /\s*<\/tool_call>$/i,
-            ''
-          )
-          .trim();
+  let match: RegExpExecArray | null;
 
-      try {
-        const obj =
-          JSON.parse(cleaned);
+  while (
+    (match =
+      tagRegex.exec(text))
+  ) {
+    const objects =
+      findJsonObjects(
+        match[1]
+      );
 
-        if (obj?.name) {
-          add(
-            obj.name,
-            obj.arguments ??
-              obj.parameters ??
-              {},
-            obj.id
-          );
-        }
+    for (const object of objects) {
+      const call =
+        makeToolCall(object);
 
-        if (
-          Array.isArray(
-            obj?.tool_calls
-          )
-        ) {
-          for (
-            const call of
-            obj.tool_calls
-          ) {
-            add(
-              call?.function?.name ||
-                call?.name ||
-                call?.tool,
-
-              call?.function?.arguments ??
-                call?.arguments ??
-                call?.parameters ??
-                {},
-
-              call?.id
-            );
-          }
-        }
-      } catch {
-        // Continue.
+      if (call) {
+        calls.push(call);
       }
     }
   }
 
   /*
-   * Explicit TOOL_CALL: ...
+   * 2. TOOL_CALL:
    */
-  const prefixMatches =
-    [
-      ...text.matchAll(
-        /TOOL_CALL\s*:\s*([\s\S]+)/gi
-      )
-    ];
+  const toolCallRegex =
+    /TOOL_CALL\s*:\s*([\s\S]+)/gi;
 
-  for (
-    const match of prefixMatches
+  while (
+    (match =
+      toolCallRegex.exec(text))
   ) {
-    const payload =
-      match[1].trim();
-
-    try {
-      const obj =
-        JSON.parse(payload);
-
-      add(
-        obj?.name ||
-          obj?.tool ||
-          obj?.function?.name,
-
-        obj?.arguments ??
-          obj?.parameters ??
-          obj?.function?.arguments ??
-          {},
-
-        obj?.id
+    const objects =
+      findJsonObjects(
+        match[1]
       );
-    } catch {
-      // Continue.
+
+    for (const object of objects) {
+      const source =
+        object?.tool_call ||
+        object?.function_call ||
+        object;
+
+      const call =
+        makeToolCall(source);
+
+      if (call) {
+        calls.push(call);
+      }
     }
   }
 
   /*
-   * JSON envelopes.
+   * 3. JSON envelope
    */
-  const jsons =
+  const objects =
     findJsonObjects(text);
 
-  for (
-    const raw of jsons
-  ) {
-    try {
-      const obj =
-        JSON.parse(raw);
-
-      if (
-        !obj ||
-        typeof obj !== 'object'
+  for (const object of objects) {
+    if (
+      Array.isArray(
+        object?.tool_calls
+      )
+    ) {
+      for (
+        const raw of
+        object.tool_calls
       ) {
-        continue;
-      }
+        const call =
+          makeToolCall(raw);
 
-      /*
-       * Native-ish:
-       * { tool_calls: [...] }
-       */
-      if (
-        Array.isArray(
-          obj.tool_calls
-        )
-      ) {
-        for (
-          const call of
-          obj.tool_calls
-        ) {
-          add(
-            call?.function?.name ||
-              call?.name ||
-              call?.tool,
-
-            call?.function?.arguments ??
-              call?.arguments ??
-              call?.parameters ??
-              {},
-
-            call?.id
-          );
+        if (call) {
+          calls.push(call);
         }
-
-        continue;
       }
+    }
 
-      /*
-       * { tool_call: {...} }
-       */
-      if (
-        obj.tool_call &&
-        typeof obj.tool_call ===
-          'object'
-      ) {
-        const call =
-          obj.tool_call;
-
-        add(
-          call.name ||
-            call.tool ||
-            call.function?.name,
-
-          call.arguments ??
-            call.parameters ??
-            call.function?.arguments ??
-            {},
-
-          call.id
+    if (
+      object?.tool_call
+    ) {
+      const call =
+        makeToolCall(
+          object.tool_call
         );
 
-        continue;
+      if (call) {
+        calls.push(call);
       }
+    }
 
-      /*
-       * { function_call: {...} }
-       */
-      if (
-        obj.function_call &&
-        typeof obj.function_call ===
-          'object'
-      ) {
-        const call =
-          obj.function_call;
-
-        add(
-          call.name,
-
-          call.arguments ??
-            {},
-
-          call.id
+    if (
+      object?.function_call
+    ) {
+      const call =
+        makeToolCall(
+          object.function_call
         );
 
-        continue;
+      if (call) {
+        calls.push(call);
       }
+    }
 
-      /*
-       * Direct object.
-       */
-      const name =
-        typeof obj.name === 'string'
-          ? obj.name
-          : typeof obj.tool === 'string'
-            ? obj.tool
-            : undefined;
+    /*
+     * Direct:
+     * {"name":"shell","arguments":...}
+     */
+    if (
+      object?.name &&
+      (
+        object?.arguments !==
+          undefined ||
+        object?.parameters !==
+          undefined
+      )
+    ) {
+      const call =
+        makeToolCall(
+          object
+        );
 
-      if (!name) {
-        continue;
+      if (call) {
+        calls.push(call);
       }
-
-      let args =
-        obj.arguments;
-
-      if (
-        args === undefined
-      ) {
-        args =
-          obj.parameters;
-      }
-
-      if (
-        args === undefined
-      ) {
-        const copy = {
-          ...obj
-        };
-
-        delete copy.name;
-        delete copy.tool;
-
-        args = copy;
-      }
-
-      add(
-        name,
-        args,
-        obj.id
-      );
-    } catch {
-      // Not valid JSON.
     }
   }
 
   /*
-   * "Called function shell"
-   *
-   * Some upstream responses emit the name in
-   * plain text and arguments in a JSON object.
+   * 4. Called function shell
    */
-  const calledMatches =
-    [
-      ...text.matchAll(
-        /Called function\s+([A-Za-z0-9_.:-]+)/gi
-      )
-    ];
+  const calledRegex =
+    /Called function\s+([A-Za-z0-9_.:-]+)[\s\S]*?(\{[\s\S]*\})/gi;
 
-  if (calledMatches.length) {
-    const jsons =
-      findJsonObjects(text);
+  while (
+    (match =
+      calledRegex.exec(text))
+  ) {
+    const name =
+      match[1];
 
-    for (
-      const match of calledMatches
-    ) {
-      const name =
-        match[1];
+    const objects =
+      findJsonObjects(
+        match[2]
+      );
 
-      for (
-        const raw of jsons
-      ) {
-        try {
-          const obj =
-            JSON.parse(raw);
+    for (const object of objects) {
+      const call =
+        makeToolCall({
+          name,
+          arguments: object,
+        });
 
-          add(
-            name,
-            obj
-          );
-
-          break;
-        } catch {
-          // Continue.
-        }
+      if (call) {
+        calls.push(call);
       }
     }
   }
 
-  return calls;
+  /*
+   * Deduplicate.
+   */
+  const unique =
+    new Map<string, any>();
+
+  for (const call of calls) {
+    const key =
+      [
+        call.function.name,
+        call.function.arguments,
+      ].join(":");
+
+    if (!unique.has(key)) {
+      unique.set(
+        key,
+        call
+      );
+    }
+  }
+
+  return [...unique.values()];
 }
 
+/* =========================================================
+ * Tool prompt
+ * ========================================================= */
+
+function appendToolProtocol(
+  systemPrompt: string,
+  tools: any[]
+): string {
+  if (
+    !Array.isArray(tools) ||
+    !tools.length
+  ) {
+    return systemPrompt;
+  }
+
+  const definitions =
+    tools
+      .map((tool) => {
+        const fn =
+          tool?.function ||
+          tool;
+
+        return JSON.stringify({
+          name:
+            fn?.name,
+          description:
+            fn?.description,
+          parameters:
+            fn?.parameters,
+        });
+      })
+      .join("\n");
+
+  return [
+    systemPrompt,
+
+    "=== AVAILABLE TOOLS ===",
+    definitions,
+    "=== END AVAILABLE TOOLS ===",
+
+    "When you need an external tool, emit ONLY a tool call.",
+    "Use this format:",
+    '{"tool_calls":[{"id":"call_x","type":"function","function":{"name":"tool_name","arguments":"{\\"key\\":\\"value\\"}"}}]}',
+    "",
+    "Do not pretend a tool was executed.",
+    "Wait for the tool result.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/* =========================================================
+ * Continuation
+ * ========================================================= */
+
+function appendContinuation(
+  systemPrompt: string
+): string {
+  return [
+    systemPrompt,
+
+    "=== TOOL CONTINUATION ===",
+    "A tool requested by the assistant has completed.",
+    "The conversation contains the assistant tool call and the real tool result.",
+    "Continue the ORIGINAL user request.",
+    "Interpret the tool result.",
+    "Do not output an empty response.",
+    "Do not repeat the tool call unless genuinely necessary.",
+    "Return the final answer directly to the user.",
+    "=== END TOOL CONTINUATION ===",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/* =========================================================
+ * OpenAI completion object
+ * ========================================================= */
+
 function createCompletion(
-  id: string,
   model: string,
-  content: string,
-  toolCalls: OpenAIToolCall[] = []
+  text: string,
+  toolCalls: any[],
+  id: string
 ) {
+  const created =
+    Math.floor(
+      Date.now() / 1000
+    );
+
   if (
     toolCalls.length
   ) {
     return {
       id,
-
       object:
-        'chat.completion',
-
-      created:
-        getTimestamp(),
-
+        "chat.completion",
+      created,
       model,
 
       choices: [
@@ -644,25 +594,19 @@ function createCompletion(
 
           message: {
             role:
-              'assistant',
+              "assistant",
 
             content:
               null,
 
             tool_calls:
-              toolCalls
+              toolCalls,
           },
 
           finish_reason:
-            'tool_calls'
-        }
+            "tool_calls",
+        },
       ],
-
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0
-      }
     };
   }
 
@@ -670,10 +614,9 @@ function createCompletion(
     id,
 
     object:
-      'chat.completion',
+      "chat.completion",
 
-    created:
-      getTimestamp(),
+    created,
 
     model,
 
@@ -683,709 +626,554 @@ function createCompletion(
 
         message: {
           role:
-            'assistant',
+            "assistant",
 
           content:
-            content || ''
+            text,
         },
 
         finish_reason:
-          'stop'
-      }
+          "stop",
+      },
     ],
-
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0
-    }
   };
 }
 
-function createStreamChunk(
-  id: string,
-  model: string,
-  delta: any,
-  finishReason:
-    | string
-    | null = null
+/* =========================================================
+ * Empty response
+ * ========================================================= */
+
+function isEmpty(
+  text: string
 ) {
-  return (
-    `data: ${JSON.stringify({
-      id,
-
-      object:
-        'chat.completion.chunk',
-
-      created:
-        getTimestamp(),
-
-      model,
-
-      choices: [
-        {
-          index: 0,
-          delta,
-          finish_reason:
-            finishReason
-        }
-      ]
-    })}\n\n`
-  );
+  return !text ||
+    !text.trim();
 }
 
-function hasToolResult(
-  body: OpenAIChatRequest
-): boolean {
-  return body.messages.some(
-    (message: any) =>
-      message?.role === 'tool'
-  );
-}
+/* =========================================================
+ * Session key
+ * ========================================================= */
 
-function hasAssistantToolCall(
-  body: OpenAIChatRequest
-): boolean {
-  return body.messages.some(
-    (message: any) =>
-      message?.role === 'assistant' &&
-      Array.isArray(
-        message?.tool_calls
-      ) &&
-      message.tool_calls.length > 0
-  );
-}
-
-function appendToolProtocol(
-  systemPrompt: string,
-  tools?: OpenAITool[]
+function getSessionKey(
+  request: NextRequest,
+  body: ChatBody
 ): string {
+  const header =
+    request.headers.get(
+      "x-agent-session"
+    ) ||
+    request.headers.get(
+      "x-session-id"
+    );
+
+  if (header?.trim()) {
+    return header.trim();
+  }
+
   if (
-    !tools ||
-    !tools.length
+    body.session_id?.trim()
   ) {
-    return systemPrompt;
+    return body.session_id;
   }
 
-  const toolList =
-    tools
-      .filter(
-        tool =>
-          tool.type === 'function' &&
-          tool.function?.name
-      )
-      .map(
-        tool =>
-          JSON.stringify(tool)
-      )
-      .join('\n');
-
-  if (!toolList) {
-    return systemPrompt;
+  if (
+    body.user?.trim()
+  ) {
+    return `user:${body.user.trim()}`;
   }
 
-  return [
-    systemPrompt,
-    '',
-    '=== AVAILABLE AGENT TOOLS ===',
-    toolList,
-    '',
-    '=== TOOL CALL PROTOCOL ===',
-    'When a tool is required, output ONLY one JSON object:',
-    '{"name":"TOOL_NAME","arguments":{"argument":"value"}}',
-    '',
-    'TOOL_NAME must exactly match an available tool.',
-    'Do not fabricate tool results.',
-    'The external agent executes the tool.',
-    'After a tool result is supplied, continue the ORIGINAL task.',
-    'If the task is complete, answer normally.',
-    'Never return an empty response.',
-    '=== END TOOL PROTOCOL ==='
-  ]
-    .filter(Boolean)
-    .join('\n');
+  if (
+    body.conversationId?.trim()
+  ) {
+    return `conversation:${body.conversationId.trim()}`;
+  }
+
+  /*
+   * IMPORTANT:
+   *
+   * Don't create a random session on every
+   * tool continuation if AnyClaw gives no
+   * explicit session.
+   *
+   * This request-level fallback remains stable
+   * through the client conversation when
+   * conversationId exists.
+   */
+  return "default";
 }
 
-function appendContinuation(
-  systemPrompt: string
-): string {
-  return [
-    systemPrompt,
-    '',
-    '=== FINAL AGENT CONTINUATION ===',
-    'A tool has already executed.',
-    'Its real result is present in the conversation.',
-    'Continue the original user task now.',
-    '',
-    'Return a normal natural-language answer if the task is complete.',
-    'Use the tool result as factual context.',
-    'Do not invent results.',
-    'Do not say you are waiting for a tool.',
-    'Do not return an empty response.',
-    '=== END FINAL AGENT CONTINUATION ==='
-  ].join('\n');
-}
+/* =========================================================
+ * API key
+ * ========================================================= */
 
-async function callArnaruRequest(
-  arnaruBody: any,
-  files: any[]
-): Promise<Response> {
-  return files.length
-    ? callArnaruChatWithFiles(
-        arnaruBody,
-        files
-      )
-    : callArnaruChat(
-        arnaruBody
-      );
-}
-
-async function readArnaruResponse(
-  response: Response
+function isAuthorized(
+  request: NextRequest
 ) {
-  const rawText =
-    await response.text();
+  const expected =
+    process.env.API_KEY ||
+    process.env.OPENAI_API_KEY;
 
-  const parsed =
-    parseSSE(rawText);
+  if (!expected) {
+    return true;
+  }
 
+  const authorization =
+    request.headers.get(
+      "authorization"
+    );
+
+  if (!authorization) {
+    return false;
+  }
+
+  return (
+    authorization ===
+    `Bearer ${expected}`
+  );
+}
+
+/* =========================================================
+ * CORS
+ * ========================================================= */
+
+function corsHeaders() {
   return {
-    rawText,
-    parsed
+    "Access-Control-Allow-Origin":
+      "*",
+
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, X-Agent-Session, X-Session-ID",
+
+    "Access-Control-Allow-Methods":
+      "POST, OPTIONS",
   };
 }
 
-function makeDiagnostic(
-  parsed: any
-): string {
-  if (
-    parsed?.errorMessage
-  ) {
-    return (
-      `Arnaru returned an error: ${parsed.errorMessage}`
-    );
-  }
+/* =========================================================
+ * Request
+ * ========================================================= */
 
-  return (
-    'Arnaru returned an empty response after the tool execution.'
-  );
-}
-
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
+export async function POST(
+  request: NextRequest
 ) {
-  if (
-    req.method === 'OPTIONS'
-  ) {
-    res.setHeader(
-      'Access-Control-Allow-Origin',
-      '*'
-    );
-
-    res.setHeader(
-      'Access-Control-Allow-Methods',
-      'POST, OPTIONS'
-    );
-
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization'
-    );
-
-    return res
-      .status(200)
-      .end();
-  }
+  const headers =
+    corsHeaders();
 
   if (
-    req.method !== 'POST'
+    !isAuthorized(request)
   ) {
-    return res
-      .status(405)
-      .json({
-        error:
-          'Method not allowed. Use POST.'
-      });
+    return json(
+      {
+        error: {
+          message:
+            "Unauthorized",
+          type:
+            "invalid_api_key",
+        },
+      },
+      401,
+      headers
+    );
   }
 
-  const proxyApiKey =
-    process.env.PROXY_API_KEY;
-
-  const authHeader =
-    req.headers.authorization;
-
-  if (
-    proxyApiKey &&
-    authHeader !==
-      `Bearer ${proxyApiKey}`
-  ) {
-    return res
-      .status(401)
-      .json({
-        error:
-          'Invalid or missing API key'
-      });
-  }
+  let body: ChatBody;
 
   try {
-    const body =
-      req.body as OpenAIChatRequest;
+    body =
+      await request.json();
+  } catch {
+    return json(
+      {
+        error: {
+          message:
+            "Invalid JSON body",
+          type:
+            "invalid_request_error",
+        },
+      },
+      400,
+      headers
+    );
+  }
 
-    if (
-      !body ||
-      !Array.isArray(body.messages) ||
-      body.messages.length === 0
-    ) {
-      return res
-        .status(400)
-        .json({
-          error: {
-            message:
-              'messages is required',
+  if (
+    !Array.isArray(
+      body.messages
+    ) ||
+    body.messages.length === 0
+  ) {
+    return json(
+      {
+        error: {
+          message:
+            "messages is required",
+          type:
+            "invalid_request_error",
+        },
+      },
+      400,
+      headers
+    );
+  }
 
-            type:
-              'invalid_request_error'
-          }
-        });
-    }
+  const model =
+    body.model &&
+    VALID_MODELS.has(
+      body.model
+    )
+      ? body.model
+      : "claude-fable-5";
 
-    const model =
-      validateModel(
-        body.model || ''
-      );
+  const messages =
+    body.messages;
 
-    const requestId =
-      generateId();
+  const toolResultExists =
+    hasToolResult(messages);
 
-    const {
-      arnaruBody,
-      files
-    } =
-      await buildArnaruRequest({
-        ...body,
-        model
-      });
-
-    /*
-     * Tool protocol.
-     */
-    arnaruBody.systemPrompt =
-      appendToolProtocol(
-        arnaruBody.systemPrompt || '',
-        body.tools
-      );
-
-    const continuation =
-      hasToolResult(body);
-
-    /*
-     * The continuation instruction is only added
-     * after a real tool result exists.
-     */
-    if (continuation) {
-      arnaruBody.systemPrompt =
-        appendContinuation(
-          arnaruBody.systemPrompt || ''
-        );
-    }
-
-    /*
-     * Debugging metadata.
-     *
-     * Deliberately do not print full tool output because
-     * command output can contain secrets.
-     */
-    console.log(
-      '[Arnaru proxy]',
-      JSON.stringify({
-        model,
-        messageCount:
-          body.messages.length,
-        hasToolResult:
-          continuation,
-        hasAssistantToolCall:
-          hasAssistantToolCall(body),
-        toolCount:
-          body.tools?.length || 0,
-        hasFiles:
-          files.length > 0
-      })
+  const sessionId =
+    getSessionKey(
+      request,
+      body
     );
 
-    /*
-     * FIRST REQUEST
-     */
-    let arnaruResponse =
-      await callArnaruRequest(
-        arnaruBody,
-        files
+  /*
+   * IMPORTANT:
+   *
+   * Don't mutate the original body messages.
+   */
+  let systemPrompt =
+    messages
+      .filter(
+        (message) =>
+          message.role ===
+          "system"
+      )
+      .map(
+        (message) =>
+          typeof message.content ===
+          "string"
+            ? message.content
+            : safeString(
+                message.content
+              )
+      )
+      .join("\n\n");
+
+  systemPrompt =
+    appendToolProtocol(
+      systemPrompt,
+      body.tools || []
+    );
+
+  if (
+    toolResultExists
+  ) {
+    systemPrompt =
+      appendContinuation(
+        systemPrompt
       );
+  }
 
-    if (
-      !arnaruResponse.ok
-    ) {
-      const errorText =
-        await arnaruResponse.text();
+  const arnaruRequest =
+    buildArnaruRequest(
+      messages,
+      {
+        model,
+        conversationId:
+          body.conversationId,
+        webSearch:
+          body.webSearch,
+        systemPrompt,
+        sessionId,
+      }
+    );
 
-      console.error(
-        'Arnaru API error:',
-        arnaruResponse.status,
-        errorText.slice(0, 1000)
-      );
+  /*
+   * Tool result means this is the SECOND+
+   * turn of an agent execution.
+   */
+  const isContinuation =
+    toolResultExists;
 
-      return res
-        .status(
-          arnaruResponse.status
-        )
-        .json({
-          error: {
-            message:
-              `Arnaru API error: ${arnaruResponse.status}`,
+  /*
+   * Empty response retries.
+   *
+   * Similar concept to FreeDeepseekAPI.
+   */
+  const maxRetries = isContinuation
+    ? 2
+    : 1;
 
-            type:
-              'api_error'
+  let lastError:
+    | unknown
+    | undefined;
+
+  let finalText = "";
+
+  let finalResponse:
+    | Awaited<
+        ReturnType<
+          typeof callArnaruChat
+        >
+      >
+    | undefined;
+
+  let finalRequest =
+    arnaruRequest;
+
+  const files =
+    messages
+      .flatMap(
+        (message: any) => {
+          const content =
+            message.content;
+
+          if (
+            !Array.isArray(content)
+          ) {
+            return [];
           }
-        });
-    }
 
-    let {
-      rawText,
-      parsed
-    } =
-      await readArnaruResponse(
-        arnaruResponse
+          return content;
+        }
+      )
+      .filter(
+        (part: any) =>
+          part?.type === "file" ||
+          part?.type ===
+            "input_file"
       );
 
-    /*
-     * TOOL CALL
-     */
-    let toolCalls =
-      parseToolCalls(
-        parsed.fullMessage || '',
-        body.tools
-      );
+  for (
+    let attempt = 0;
+    attempt <= maxRetries;
+    attempt++
+  ) {
+    try {
+      /*
+       * Recovery prompt gets progressively
+       * stronger.
+       */
+      let requestForAttempt = {
+        ...finalRequest,
+      };
 
-    if (
-      toolCalls.length
-    ) {
-      const completion =
-        createCompletion(
-          requestId,
-          model,
-          '',
-          toolCalls
-        );
-
-      res.setHeader(
-        'Content-Type',
-        'application/json'
-      );
-
-      res.setHeader(
-        'Access-Control-Allow-Origin',
-        '*'
-      );
-
-      return res
-        .status(200)
-        .json(completion);
-    }
-
-    /*
-     * If we have a tool result and Arnaru returns
-     * nothing, perform bounded recovery.
-     *
-     * This is intentionally limited to 2 attempts.
-     */
-    if (
-      continuation &&
-      !parsed.fullMessage?.trim()
-    ) {
-      console.warn(
-        '[Arnaru proxy] Empty continuation response; retrying.'
-      );
-
-      const retryPrompts = [
-        [
-          arnaruBody.systemPrompt || '',
-          '',
-          '=== RECOVERY ===',
-          'Your previous response was empty.',
-          'A tool has already completed.',
-          'Read the tool result in the conversation.',
-          'Now provide the final answer to the original user.',
-          'Return plain natural-language text.',
-          'Do not call a tool unless absolutely necessary.',
-          'Never return empty.',
-          '=== END RECOVERY ==='
-        ].join('\n'),
-
-        [
-          'The external tool has already finished.',
-          'Continue the original user request from the tool result.',
-          'Give the final answer now.',
-          'Do not return empty.'
-        ].join('\n')
-      ];
-
-      for (
-        const recoveryPrompt of retryPrompts
+      if (
+        attempt > 0 &&
+        isContinuation
       ) {
-        const retryBody = {
-          ...arnaruBody,
+        requestForAttempt = {
+          ...requestForAttempt,
 
-          systemPrompt:
-            recoveryPrompt
+          systemPrompt: [
+            requestForAttempt.systemPrompt,
+
+            "=== FINAL RECOVERY ===",
+            "The external tool has already completed successfully.",
+            "You MUST answer the user's original request now.",
+            "The tool result is already present in the conversation.",
+            "Do not call a tool.",
+            "Do not return an empty response.",
+            "Give a concise factual answer based on the tool result.",
+            "=== END FINAL RECOVERY ===",
+          ]
+            .filter(Boolean)
+            .join("\n"),
         };
-
-        const retryResponse =
-          await callArnaruRequest(
-            retryBody,
-            files
-          );
-
-        if (
-          !retryResponse.ok
-        ) {
-          continue;
-        }
-
-        const retryParsed =
-          await readArnaruResponse(
-            retryResponse
-          );
-
-        rawText =
-          retryParsed.rawText;
-
-        parsed =
-          retryParsed.parsed;
-
-        toolCalls =
-          parseToolCalls(
-            parsed.fullMessage || '',
-            body.tools
-          );
-
-        if (
-          toolCalls.length
-        ) {
-          const completion =
-            createCompletion(
-              requestId,
-              model,
-              '',
-              toolCalls
-            );
-
-          res.setHeader(
-            'Content-Type',
-            'application/json'
-          );
-
-          res.setHeader(
-            'Access-Control-Allow-Origin',
-            '*'
-          );
-
-          return res
-            .status(200)
-            .json(completion);
-        }
-
-        if (
-          parsed.fullMessage?.trim()
-        ) {
-          break;
-        }
-      }
-    }
-
-    /*
-     * Upstream error.
-     */
-    if (
-      parsed.hasError &&
-      !parsed.fullMessage?.trim()
-    ) {
-      return res
-        .status(502)
-        .json({
-          error: {
-            message:
-              parsed.errorMessage ||
-              'Arnaru returned an upstream error',
-
-            type:
-              'upstream_error'
-          }
-        });
-    }
-
-    /*
-     * STREAMING
-     */
-    if (body.stream) {
-      res.setHeader(
-        'Content-Type',
-        'text/event-stream'
-      );
-
-      res.setHeader(
-        'Cache-Control',
-        'no-cache, no-transform'
-      );
-
-      res.setHeader(
-        'Connection',
-        'keep-alive'
-      );
-
-      res.setHeader(
-        'Access-Control-Allow-Origin',
-        '*'
-      );
-
-      res.write(
-        createStreamChunk(
-          requestId,
-          model,
-          {
-            role:
-              'assistant'
-          }
-        )
-      );
-
-      for (
-        const chunk of
-        parseSSEStream(rawText)
-      ) {
-        if (
-          chunk.error
-        ) {
-          res.write(
-            `data: ${JSON.stringify({
-              error:
-                chunk.error
-            })}\n\n`
-          );
-
-          continue;
-        }
-
-        if (
-          chunk.text
-        ) {
-          res.write(
-            createStreamChunk(
-              requestId,
-              model,
-              {
-                content:
-                  chunk.text
-              }
-            )
-          );
-        }
-      }
-
-      res.write(
-        createStreamChunk(
-          requestId,
-          model,
-          {},
-          'stop'
-        )
-      );
-
-      res.write(
-        'data: [DONE]\n\n'
-      );
-
-      return res.end();
-    }
-
-    /*
-     * NORMAL RESPONSE
-     */
-    const finalContent =
-      parsed.fullMessage?.trim() ||
-      '';
-
-    /*
-     * Do not silently return an empty string.
-     * This is especially useful while debugging the
-     * AnyClaw -> tool -> Arnaru continuation chain.
-     */
-    if (!finalContent) {
-      if (continuation) {
-        console.error(
-          '[Arnaru proxy] Final response remained empty after recovery.'
-        );
-
-        return res
-          .status(502)
-          .json({
-            error: {
-              message:
-                makeDiagnostic(
-                  parsed
-                ),
-
-              type:
-                'empty_upstream_response'
-            }
-          });
       }
 
       /*
-       * For an ordinary empty upstream response,
-       * preserve OpenAI-compatible behavior rather
-       * than inventing content.
+       * File support is retained.
        */
-    }
+      let response;
 
-    const completion =
-      createCompletion(
-        requestId,
-        model,
-        finalContent
+      if (
+        files.length
+      ) {
+        /*
+         * buildArnaruRequest already
+         * extracts actual file buffers.
+         *
+         * This branch intentionally falls
+         * back to normal call if no actual
+         * buffers are available.
+         */
+        response =
+          await callArnaruChat(
+            requestForAttempt
+          );
+      } else {
+        response =
+          await callArnaruChat(
+            requestForAttempt
+          );
+      }
+
+      finalResponse =
+        response;
+
+      if (
+        response.conversationId
+      ) {
+        finalRequest = {
+          ...requestForAttempt,
+
+          conversationId:
+            response.conversationId,
+        };
+
+        updateArnaruSession(
+          sessionId,
+          response
+        );
+      }
+
+      const text =
+        response.text
+          ?.trim() || "";
+
+      /*
+       * FIRST:
+       * parse tool calls.
+       *
+       * A model tool call must never be
+       * mistaken for normal text.
+       */
+      const toolCalls =
+        parseToolCalls(
+          text
+        );
+
+      if (
+        toolCalls.length
+      ) {
+        const completionId =
+          generateId();
+
+        return json(
+          createCompletion(
+            model,
+            "",
+            toolCalls,
+            completionId
+          ),
+          200,
+          headers
+        );
+      }
+
+      /*
+       * Normal answer.
+       */
+      if (
+        !isEmpty(text)
+      ) {
+        finalText =
+          text;
+
+        break;
+      }
+
+      /*
+       * Empty.
+       */
+      lastError =
+        new Error(
+          `Arnaru returned an empty response (attempt ${
+            attempt + 1
+          })`
+        );
+
+      markArnaruFailure(
+        sessionId
       );
 
-    res.setHeader(
-      'Content-Type',
-      'application/json'
-    );
+    } catch (error) {
+      lastError =
+        error;
 
-    res.setHeader(
-      'Access-Control-Allow-Origin',
-      '*'
-    );
+      markArnaruFailure(
+        sessionId
+      );
 
-    return res
-      .status(200)
-      .json(completion);
-
-  } catch (error) {
-    console.error(
-      'Proxy error:',
-      error
-    );
-
-    return res
-      .status(500)
-      .json({
-        error: {
-          message:
-            error instanceof Error
-              ? error.message
-              : 'Internal server error',
-
-          type:
-            'internal_error'
-        }
-      });
+      /*
+       * Only retry continuation.
+       */
+      if (
+        !isContinuation
+      ) {
+        break;
+      }
+    }
   }
+
+  /*
+   * We have a real answer.
+   */
+  if (
+    !isEmpty(finalText)
+  ) {
+    const completionId =
+      generateId();
+
+    return json(
+      createCompletion(
+        model,
+        finalText,
+        [],
+        completionId
+      ),
+      200,
+      headers
+    );
+  }
+
+  /*
+   * NEVER silently return:
+   *
+   * ""
+   *
+   * That was the original bug.
+   */
+  return json(
+    {
+      error: {
+        message:
+          isContinuation
+            ? "Arnaru returned an empty response after tool execution. The tool result was received, but the model failed to produce the final assistant message."
+            : "Arnaru returned an empty response.",
+
+        type:
+          "empty_upstream_response",
+
+        retryable:
+          isContinuation,
+
+        details:
+          process.env.NODE_ENV ===
+          "development"
+            ? safeString(
+                lastError
+              )
+            : undefined,
+      },
+    },
+    502,
+    headers
+  );
+}
+
+/* =========================================================
+ * OPTIONS
+ * ========================================================= */
+
+export async function OPTIONS() {
+  return new NextResponse(
+    null,
+    {
+      status: 204,
+      headers:
+        corsHeaders(),
+    }
+  );
 }
