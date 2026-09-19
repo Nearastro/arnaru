@@ -1,4 +1,7 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type {
+  VercelRequest,
+  VercelResponse
+} from '@vercel/node';
 
 import type {
   OpenAIChatRequest,
@@ -6,7 +9,10 @@ import type {
   OpenAIToolCall
 } from '../../../lib/types';
 
-import { parseSSE, parseSSEStream } from '../../../lib/sse-parser';
+import {
+  parseSSE,
+  parseSSEStream
+} from '../../../lib/sse-parser';
 
 import {
   buildArnaruRequest,
@@ -18,394 +24,1295 @@ import {
 
 export const config = {
   api: {
-    bodyParser: { sizeLimit: '10mb' }
+    bodyParser: {
+      sizeLimit: '10mb'
+    }
   }
 };
 
 const VALID_MODELS = new Set([
-  'claude-fable-5', 'claude-haiku-4.5', 'claude-opus-4.6', 'claude-opus-4.7', 'claude-opus-4.8',
-  'claude-sonnet-4', 'claude-sonnet-4.6', 'claude-sonnet-5', 'deepseek-r1', 'deepseek-v3.1',
-  'deepseek-v3.2', 'deepseek-v3.2-online', 'deepseek-v3.2-think', 'deepseek-v4-flash',
-  'deepseek-v4-pro', 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash',
-  'gemini-3-pro', 'gemini-3.1-flash', 'gemini-3.1-pro', 'gemini-3.5-flash', 'gemini-3.5-flash-lite',
-  'gemini-3.6-flash', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
-  'gpt-5.1', 'gpt-5.2', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-o3-mini',
-  'grok-3', 'grok-3-reasoner', 'grok-4', 'grok-4-fast', 'grok-4-reasoning', 'grok-4.1',
-  'grok-4.1-fast', 'grok-4.1-reasoning', 'grok-4.2', 'grok-4.2-reasoning', 'grok-4.3-pro',
-  'grok-4.3-reasoning', 'grok-4.5', 'kimi-k3', 'llama-4', 'llama-4.1', 'mistral-small-3.2',
-  'mistral-small-creative', 'qwen-vl-max', 'qwen3-235b', 'qwen3-max', 'skylark-pro',
-  'step-3.5-flash', 'step-3.5-flash-free'
+  'claude-fable-5',
+  'claude-haiku-4.5',
+  'claude-opus-4.6',
+  'claude-opus-4.7',
+  'claude-opus-4.8',
+  'claude-sonnet-4',
+  'claude-sonnet-4.6',
+  'claude-sonnet-5',
+  'deepseek-r1',
+  'deepseek-v3.1',
+  'deepseek-v3.2',
+  'deepseek-v3.2-online',
+  'deepseek-v3.2-think',
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
+  'gemini-2.0-flash',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-3-flash',
+  'gemini-3-pro',
+  'gemini-3.1-flash',
+  'gemini-3.1-pro',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.6-flash',
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4o',
+  'gpt-5',
+  'gpt-5-mini',
+  'gpt-5-nano',
+  'gpt-5.1',
+  'gpt-5.2',
+  'gpt-5.4',
+  'gpt-5.5',
+  'gpt-5.6-luna',
+  'gpt-5.6-sol',
+  'gpt-o3-mini',
+  'grok-3',
+  'grok-3-reasoner',
+  'grok-4',
+  'grok-4-fast',
+  'grok-4-reasoning',
+  'grok-4.1',
+  'grok-4.1-fast',
+  'grok-4.1-reasoning',
+  'grok-4.2',
+  'grok-4.2-reasoning',
+  'grok-4.3-pro',
+  'grok-4.3-reasoning',
+  'grok-4.5',
+  'kimi-k3',
+  'llama-4',
+  'llama-4.1',
+  'mistral-small-3.2',
+  'mistral-small-creative',
+  'qwen-vl-max',
+  'qwen3-235b',
+  'qwen3-max',
+  'skylark-pro',
+  'step-3.5-flash',
+  'step-3.5-flash-free'
 ]);
 
-function validateModel(model: string): string {
-  return VALID_MODELS.has(model) ? model : (process.env.DEFAULT_MODEL || 'claude-fable-5');
+function validateModel(
+  model: string
+): string {
+  return VALID_MODELS.has(model)
+    ? model
+    : (
+        process.env.DEFAULT_MODEL ||
+        'claude-fable-5'
+      );
 }
 
-function getToolNames(tools?: OpenAITool[]): Set<string> {
+function getToolNames(
+  tools?: OpenAITool[]
+): Set<string> {
   return new Set(
-    (tools || []).filter(tool => tool.type === 'function' && !!tool.function?.name)
-                 .map(tool => tool.function.name)
+    (tools || [])
+      .filter(
+        tool =>
+          tool.type === 'function' &&
+          !!tool.function?.name
+      )
+      .map(
+        tool =>
+          tool.function.name
+      )
   );
 }
 
-function findJsonObjects(text: string): string[] {
+function findJsonObjects(
+  text: string
+): string[] {
   const results: string[] = [];
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
+
+  const fenced =
+    text.match(
+      /```(?:json)?\s*([\s\S]*?)\s*```/gi
+    );
+
   if (fenced) {
-    for (const block of fenced) {
-      const cleaned = block.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-      if (cleaned) results.push(cleaned);
+    for (
+      const block of fenced
+    ) {
+      const cleaned =
+        block
+          .replace(
+            /^```(?:json)?/i,
+            ''
+          )
+          .replace(
+            /```$/i,
+            ''
+          )
+          .trim();
+
+      if (cleaned) {
+        results.push(cleaned);
+      }
     }
   }
 
-  let depth = 0, start = -1, inString = false, escaped = false;
-  for (let i = 0; i < text.length; i++) {
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (
+    let i = 0;
+    i < text.length;
+    i++
+  ) {
     const c = text[i];
+
     if (inString) {
-      if (escaped) escaped = false;
-      else if (c === '\\') escaped = true;
-      else if (c === '"') inString = false;
+      if (escaped) {
+        escaped = false;
+      } else if (
+        c === '\\'
+      ) {
+        escaped = true;
+      } else if (
+        c === '"'
+      ) {
+        inString = false;
+      }
+
       continue;
     }
-    if (c === '"') { inString = true; continue; }
+
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+
     if (c === '{') {
-      if (depth === 0) start = i;
+      if (depth === 0) {
+        start = i;
+      }
+
       depth++;
     } else if (c === '}') {
       depth--;
-      if (depth === 0 && start >= 0) {
-        results.push(text.slice(start, i + 1));
+
+      if (
+        depth === 0 &&
+        start >= 0
+      ) {
+        results.push(
+          text.slice(
+            start,
+            i + 1
+          )
+        );
+
         start = -1;
       }
     }
   }
+
   return results;
 }
 
-function normalizeArguments(value: any): Record<string, any> {
-  if (typeof value === 'string') {
+function normalizeArguments(
+  value: any
+): Record<string, any> {
+  if (
+    typeof value === 'string'
+  ) {
     try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === 'object') return parsed;
+      const parsed =
+        JSON.parse(value);
+
+      if (
+        parsed &&
+        typeof parsed === 'object'
+      ) {
+        return parsed;
+      }
     } catch {
-      return { input: value };
+      return {
+        input: value
+      };
     }
   }
-  if (value && typeof value === 'object') return value;
+
+  if (
+    value &&
+    typeof value === 'object'
+  ) {
+    return value;
+  }
+
   return {};
 }
 
-function makeToolCall(name: string, args: any, suppliedId?: string): OpenAIToolCall {
+function makeToolCall(
+  name: string,
+  args: any,
+  suppliedId?: string
+): OpenAIToolCall {
   return {
-    id: suppliedId || `call_${generateId()}`,
+    id:
+      suppliedId ||
+      `call_${generateId()}`,
+
     type: 'function',
-    function: { name, arguments: JSON.stringify(normalizeArguments(args)) }
+
+    function: {
+      name,
+
+      arguments:
+        JSON.stringify(
+          normalizeArguments(args)
+        )
+    }
   };
 }
 
-function parseToolCalls(text: string, tools?: OpenAITool[]): OpenAIToolCall[] {
-  const allowed = getToolNames(tools);
-  if (!allowed.size) return [];
+function parseToolCalls(
+  text: string,
+  tools?: OpenAITool[]
+): OpenAIToolCall[] {
+  const allowed =
+    getToolNames(tools);
+
+  if (!allowed.size) {
+    return [];
+  }
 
   const calls: OpenAIToolCall[] = [];
   const seen = new Set<string>();
 
-  function add(name: any, args: any, id?: any) {
-    if (typeof name !== 'string' || !allowed.has(name)) return;
-    const normalized = normalizeArguments(args);
-    const key = `${name}:${JSON.stringify(normalized)}`;
-    if (seen.has(key)) return;
+  function add(
+    name: any,
+    args: any,
+    id?: any
+  ) {
+    if (
+      typeof name !== 'string' ||
+      !allowed.has(name)
+    ) {
+      return;
+    }
+
+    const normalized =
+      normalizeArguments(args);
+
+    const key =
+      `${name}:${JSON.stringify(normalized)}`;
+
+    if (seen.has(key)) {
+      return;
+    }
+
     seen.add(key);
-    calls.push(makeToolCall(name, normalized, typeof id === 'string' ? id : undefined));
+
+    calls.push(
+      makeToolCall(
+        name,
+        normalized,
+        typeof id === 'string'
+          ? id
+          : undefined
+      )
+    );
   }
 
-  // Parses XML blocks <tool_call>...</tool_call>
-  const xmlMatches = text.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi);
+  const xmlMatches =
+    text.match(
+      /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi
+    );
+
   if (xmlMatches) {
-    for (const block of xmlMatches) {
-      const cleaned = block.replace(/^<tool_call>\s*/i, '').replace(/\s*<\/tool_call>$/i, '').trim();
+    for (
+      const block of xmlMatches
+    ) {
+      const cleaned =
+        block
+          .replace(
+            /^<tool_call>\s*/i,
+            ''
+          )
+          .replace(
+            /\s*<\/tool_call>$/i,
+            ''
+          )
+          .trim();
+
       try {
-        const obj = JSON.parse(cleaned);
-        if (obj?.name) add(obj.name, obj.arguments ?? obj.parameters ?? {}, obj.id);
-        if (Array.isArray(obj?.tool_calls)) {
-          for (const call of obj.tool_calls) {
-            add(call?.function?.name || call?.name || call?.tool, call?.function?.arguments ?? call?.arguments ?? call?.parameters ?? {}, call?.id);
+        const obj =
+          JSON.parse(cleaned);
+
+        if (obj?.name) {
+          add(
+            obj.name,
+            obj.arguments ??
+              obj.parameters ??
+              {},
+            obj.id
+          );
+        }
+
+        if (
+          Array.isArray(
+            obj?.tool_calls
+          )
+        ) {
+          for (
+            const call of
+            obj.tool_calls
+          ) {
+            add(
+              call?.function?.name ||
+                call?.name ||
+                call?.tool,
+
+              call?.function?.arguments ??
+                call?.arguments ??
+                call?.parameters ??
+                {},
+
+              call?.id
+            );
           }
         }
-      } catch {}
+      } catch {
+        // Continue.
+      }
     }
   }
 
-  // Parses TOOL_CALL: prefix
-  const prefixMatches = [...text.matchAll(/TOOL_CALL\s*:\s*([\s\S]+)/gi)];
-  for (const match of prefixMatches) {
+  const prefixMatches =
+    [
+      ...text.matchAll(
+        /TOOL_CALL\s*:\s*([\s\S]+)/gi
+      )
+    ];
+
+  for (
+    const match of prefixMatches
+  ) {
+    const payload =
+      match[1].trim();
+
     try {
-      const obj = JSON.parse(match[1].trim());
-      add(obj?.name || obj?.tool || obj?.function?.name, obj?.arguments ?? obj?.parameters ?? obj?.function?.arguments ?? {}, obj?.id);
-    } catch {}
+      const obj =
+        JSON.parse(payload);
+
+      add(
+        obj?.name ||
+          obj?.tool ||
+          obj?.function?.name,
+
+        obj?.arguments ??
+          obj?.parameters ??
+          obj?.function?.arguments ??
+          {},
+
+        obj?.id
+      );
+    } catch {
+      // Continue.
+    }
   }
 
-  // Parses standard JSON blocks
-  const jsons = findJsonObjects(text);
-  for (const raw of jsons) {
+  const jsons =
+    findJsonObjects(text);
+
+  for (
+    const raw of jsons
+  ) {
     try {
-      const obj = JSON.parse(raw);
-      if (!obj || typeof obj !== 'object') continue;
+      const obj =
+        JSON.parse(raw);
 
-      if (Array.isArray(obj.tool_calls)) {
-        for (const call of obj.tool_calls) {
-          add(call?.function?.name || call?.name || call?.tool, call?.function?.arguments ?? call?.arguments ?? call?.parameters ?? {}, call?.id);
+      if (
+        !obj ||
+        typeof obj !== 'object'
+      ) {
+        continue;
+      }
+
+      if (
+        Array.isArray(
+          obj.tool_calls
+        )
+      ) {
+        for (
+          const call of
+          obj.tool_calls
+        ) {
+          add(
+            call?.function?.name ||
+              call?.name ||
+              call?.tool,
+
+            call?.function?.arguments ??
+              call?.arguments ??
+              call?.parameters ??
+              {},
+
+            call?.id
+          );
         }
-        continue;
-      }
-      if (obj.tool_call && typeof obj.tool_call === 'object') {
-        const call = obj.tool_call;
-        add(call.name || call.tool || call.function?.name, call.arguments ?? call.parameters ?? call.function?.arguments ?? {}, call.id);
-        continue;
-      }
-      if (obj.function_call && typeof obj.function_call === 'object') {
-        const call = obj.function_call;
-        add(call.name, call.arguments ?? {}, call.id);
+
         continue;
       }
 
-      const name = typeof obj.name === 'string' ? obj.name : typeof obj.tool === 'string' ? obj.tool : undefined;
-      if (!name) continue;
+      if (
+        obj.tool_call &&
+        typeof obj.tool_call ===
+          'object'
+      ) {
+        const call =
+          obj.tool_call;
 
-      let args = obj.arguments ?? obj.parameters;
-      if (args === undefined) {
-        const copy = { ...obj };
+        add(
+          call.name ||
+            call.tool ||
+            call.function?.name,
+
+          call.arguments ??
+            call.parameters ??
+            call.function?.arguments ??
+            {},
+
+          call.id
+        );
+
+        continue;
+      }
+
+      if (
+        obj.function_call &&
+        typeof obj.function_call ===
+          'object'
+      ) {
+        const call =
+          obj.function_call;
+
+        add(
+          call.name,
+
+          call.arguments ??
+            {},
+
+          call.id
+        );
+
+        continue;
+      }
+
+      const name =
+        typeof obj.name === 'string'
+          ? obj.name
+          : typeof obj.tool === 'string'
+            ? obj.tool
+            : undefined;
+
+      if (!name) {
+        continue;
+      }
+
+      let args =
+        obj.arguments;
+
+      if (
+        args === undefined
+      ) {
+        args =
+          obj.parameters;
+      }
+
+      if (
+        args === undefined
+      ) {
+        const copy = {
+          ...obj
+        };
+
         delete copy.name;
         delete copy.tool;
+
         args = copy;
       }
-      add(name, args, obj.id);
-    } catch {}
+
+      add(
+        name,
+        args,
+        obj.id
+      );
+    } catch {
+      // Not valid JSON.
+    }
+  }
+
+  const calledMatches =
+    [
+      ...text.matchAll(
+        /Called function\s+([A-Za-z0-9_.:-]+)/gi
+      )
+    ];
+
+  if (calledMatches.length) {
+    const jsons =
+      findJsonObjects(text);
+
+    for (
+      const match of calledMatches
+    ) {
+      const name =
+        match[1];
+
+      for (
+        const raw of jsons
+      ) {
+        try {
+          const obj =
+            JSON.parse(raw);
+
+          add(
+            name,
+            obj
+          );
+
+          break;
+        } catch {
+          // Continue.
+        }
+      }
+    }
   }
 
   return calls;
 }
 
-function createCompletion(id: string, model: string, content: string, toolCalls: OpenAIToolCall[] = []) {
-  if (toolCalls.length) {
+function createCompletion(
+  id: string,
+  model: string,
+  content: string,
+  toolCalls: OpenAIToolCall[] = []
+) {
+  if (
+    toolCalls.length
+  ) {
     return {
       id,
-      object: 'chat.completion',
-      created: getTimestamp(),
+
+      object:
+        'chat.completion',
+
+      created:
+        getTimestamp(),
+
       model,
-      choices: [{
-        index: 0,
-        message: { role: 'assistant', content: null, tool_calls: toolCalls },
-        finish_reason: 'tool_calls'
-      }],
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+
+      choices: [
+        {
+          index: 0,
+
+          message: {
+            role:
+              'assistant',
+
+            content:
+              null,
+
+            tool_calls:
+              toolCalls
+          },
+
+          finish_reason:
+            'tool_calls'
+        }
+      ],
+
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      }
     };
   }
+
   return {
     id,
-    object: 'chat.completion',
-    created: getTimestamp(),
+
+    object:
+      'chat.completion',
+
+    created:
+      getTimestamp(),
+
     model,
-    choices: [{
-      index: 0,
-      message: { role: 'assistant', content: content || '' },
-      finish_reason: 'stop'
-    }],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+
+    choices: [
+      {
+        index: 0,
+
+        message: {
+          role:
+            'assistant',
+
+          content:
+            content || ''
+        },
+
+        finish_reason:
+          'stop'
+      }
+    ],
+
+    usage: {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0
+    }
   };
 }
 
-function createStreamChunk(id: string, model: string, delta: any, finishReason: string | null = null) {
-  return `data: ${JSON.stringify({
-    id,
-    object: 'chat.completion.chunk',
-    created: getTimestamp(),
-    model,
-    choices: [{ index: 0, delta, finish_reason: finishReason }]
-  })}\n\n`;
+function createStreamChunk(
+  id: string,
+  model: string,
+  delta: any,
+  finishReason:
+    | string
+    | null = null
+) {
+  return (
+    `data: ${JSON.stringify({
+      id,
+
+      object:
+        'chat.completion.chunk',
+
+      created:
+        getTimestamp(),
+
+      model,
+
+      choices: [
+        {
+          index: 0,
+          delta,
+          finish_reason:
+            finishReason
+        }
+      ]
+    })}\n\n`
+  );
 }
 
-function hasToolResult(body: OpenAIChatRequest): boolean {
-  return body.messages.some((msg: any) => msg?.role === 'tool');
+function hasToolResult(
+  body: OpenAIChatRequest
+): boolean {
+  return body.messages.some(
+    (message: any) =>
+      message?.role === 'tool'
+  );
 }
 
-function appendToolProtocol(systemPrompt: string, tools?: OpenAITool[]): string {
-  if (!tools || !tools.length) return systemPrompt;
+function hasAssistantToolCall(
+  body: OpenAIChatRequest
+): boolean {
+  return body.messages.some(
+    (message: any) =>
+      message?.role === 'assistant' &&
+      Array.isArray(
+        message?.tool_calls
+      ) &&
+      message.tool_calls.length > 0
+  );
+}
 
-  const toolList = tools
-    .filter(tool => tool.type === 'function' && tool.function?.name)
-    .map(tool => JSON.stringify(tool))
-    .join('\n');
+function appendToolProtocol(
+  systemPrompt: string,
+  tools?: OpenAITool[]
+): string {
+  if (
+    !tools ||
+    !tools.length
+  ) {
+    return systemPrompt;
+  }
 
-  if (!toolList) return systemPrompt;
+  const toolList =
+    tools
+      .filter(
+        tool =>
+          tool.type === 'function' &&
+          tool.function?.name
+      )
+      .map(
+        tool =>
+          JSON.stringify(tool)
+      )
+      .join('\n');
+
+  if (!toolList) {
+    return systemPrompt;
+  }
 
   return [
     systemPrompt,
-    '\n=== AVAILABLE AGENT TOOLS ===',
+    '',
+    '=== AVAILABLE AGENT TOOLS ===',
     toolList,
-    '\n=== TOOL CALL PROTOCOL ===',
-    'When a tool is required, output ONLY one JSON object containing the tool name and arguments.',
-    'Do not hallucinate tool results. Once you output a tool call, the system will execute it and provide the results in the next turn.',
+    '',
+    '=== TOOL CALL PROTOCOL ===',
+    'When a tool is required, output ONLY one JSON object:',
+    '{"name":"TOOL_NAME","arguments":{"argument":"value"}}',
+    '',
+    'TOOL_NAME must exactly match an available tool.',
+    'Do not fabricate tool results.',
+    'The external agent executes the tool.',
+    'After a tool result is supplied, continue the ORIGINAL task.',
+    'If the task is complete, answer normally.',
+    'Never return an empty response.',
     '=== END TOOL PROTOCOL ==='
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
-function appendContinuation(systemPrompt: string): string {
+function appendContinuation(
+  systemPrompt: string
+): string {
   return [
     systemPrompt,
-    '\n=== CRITICAL INSTRUCTION ===',
-    'A tool has just completed execution. Its results are provided in the most recent messages.',
-    'You MUST fulfill the user\'s original request using these results.',
-    'DO NOT return an empty message or wait for further input. Answer the user comprehensively right now.',
-    '=== END CRITICAL INSTRUCTION ==='
+    '',
+    '=== FINAL AGENT CONTINUATION ===',
+    'A tool has already executed.',
+    'Its real result is present in the conversation.',
+    'Continue the original user task now.',
+    '',
+    'Return a normal natural-language answer if the task is complete.',
+    'Use the tool result as factual context.',
+    'Do not invent results.',
+    'Do not say you are waiting for a tool.',
+    'Do not return an empty response.',
+    '=== END FINAL AGENT CONTINUATION ==='
   ].join('\n');
 }
 
-async function callArnaruRequest(arnaruBody: any, files: any[]): Promise<Response> {
-  return files.length ? callArnaruChatWithFiles(arnaruBody, files) : callArnaruChat(arnaruBody);
+async function callArnaruRequest(
+  arnaruBody: any,
+  files: any[]
+): Promise<Response> {
+  return files.length
+    ? callArnaruChatWithFiles(
+        arnaruBody,
+        files
+      )
+    : callArnaruChat(
+        arnaruBody
+      );
 }
 
-async function readArnaruResponse(response: Response) {
-  const rawText = await response.text();
-  const parsed = parseSSE(rawText);
-  return { rawText, parsed };
+async function readArnaruResponse(
+  response: Response
+) {
+  const rawText =
+    await response.text();
+
+  const parsed =
+    parseSSE(rawText);
+
+  return {
+    rawText,
+    parsed
+  };
 }
 
-function makeDiagnostic(parsed: any): string {
-  if (parsed?.errorMessage) return `Arnaru returned an error: ${parsed.errorMessage}`;
-  return 'Arnaru returned an empty response after the tool execution.';
-}
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    return res.status(200).end();
+function makeDiagnostic(
+  parsed: any
+): string {
+  if (
+    parsed?.errorMessage
+  ) {
+    return (
+      `Arnaru returned an error: ${parsed.errorMessage}`
+    );
   }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed. Use POST.' });
+  return (
+    'Arnaru returned an empty response after the tool execution.'
+  );
+}
+
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
+  if (
+    req.method === 'OPTIONS'
+  ) {
+    res.setHeader(
+      'Access-Control-Allow-Origin',
+      '*'
+    );
+
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'POST, OPTIONS'
+    );
+
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization'
+    );
+
+    return res
+      .status(200)
+      .end();
   }
 
-  const proxyApiKey = process.env.PROXY_API_KEY;
-  const authHeader = req.headers.authorization;
-  if (proxyApiKey && authHeader !== `Bearer ${proxyApiKey}`) {
-    return res.status(401).json({ error: 'Invalid or missing API key' });
+  if (
+    req.method !== 'POST'
+  ) {
+    return res
+      .status(405)
+      .json({
+        error:
+          'Method not allowed. Use POST.'
+      });
+  }
+
+  const proxyApiKey =
+    process.env.PROXY_API_KEY;
+
+  const authHeader =
+    req.headers.authorization;
+
+  if (
+    proxyApiKey &&
+    authHeader !==
+      `Bearer ${proxyApiKey}`
+  ) {
+    return res
+      .status(401)
+      .json({
+        error:
+          'Invalid or missing API key'
+      });
   }
 
   try {
-    const body = req.body as OpenAIChatRequest;
-    if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
-      return res.status(400).json({
-        error: { message: 'messages is required', type: 'invalid_request_error' }
-      });
+    const body =
+      req.body as OpenAIChatRequest;
+
+    if (
+      !body ||
+      !Array.isArray(body.messages) ||
+      body.messages.length === 0
+    ) {
+      return res
+        .status(400)
+        .json({
+          error: {
+            message:
+              'messages is required',
+
+            type:
+              'invalid_request_error'
+          }
+        });
     }
 
-    const model = validateModel(body.model || '');
-    const requestId = generateId();
+    const model =
+      validateModel(
+        body.model || ''
+      );
 
-    const { arnaruBody, files } = await buildArnaruRequest({ ...body, model });
+    const requestId =
+      generateId();
 
-    // Inject Tool Protocols
-    arnaruBody.systemPrompt = appendToolProtocol(arnaruBody.systemPrompt || '', body.tools);
-    const continuation = hasToolResult(body);
+    const {
+      arnaruBody,
+      files
+    } =
+      await buildArnaruRequest({
+        ...body,
+        model
+      });
+
+    arnaruBody.systemPrompt =
+      appendToolProtocol(
+        arnaruBody.systemPrompt || '',
+        body.tools
+      );
+
+    const continuation =
+      hasToolResult(body);
+
     if (continuation) {
-      arnaruBody.systemPrompt = appendContinuation(arnaruBody.systemPrompt || '');
+      arnaruBody.systemPrompt =
+        appendContinuation(
+          arnaruBody.systemPrompt || ''
+        );
     }
 
-    let arnaruResponse = await callArnaruRequest(arnaruBody, files);
+    console.log(
+      '[Arnaru proxy]',
+      JSON.stringify({
+        model,
+        messageCount:
+          body.messages.length,
+        hasToolResult:
+          continuation,
+        hasAssistantToolCall:
+          hasAssistantToolCall(body),
+        toolCount:
+          body.tools?.length || 0,
+        hasFiles:
+          files.length > 0
+      })
+    );
 
-    if (!arnaruResponse.ok) {
-      const errorText = await arnaruResponse.text();
-      return res.status(arnaruResponse.status).json({
-        error: { message: `Arnaru API error: ${arnaruResponse.status}`, type: 'api_error' }
-      });
+    let arnaruResponse =
+      await callArnaruRequest(
+        arnaruBody,
+        files
+      );
+
+    if (
+      !arnaruResponse.ok
+    ) {
+      const errorText =
+        await arnaruResponse.text();
+
+      console.error(
+        'Arnaru API error:',
+        arnaruResponse.status,
+        errorText.slice(0, 1000)
+      );
+
+      return res
+        .status(
+          arnaruResponse.status
+        )
+        .json({
+          error: {
+            message:
+              `Arnaru API error: ${arnaruResponse.status}`,
+
+            type:
+              'api_error'
+          }
+        });
     }
 
-    let { rawText, parsed } = await readArnaruResponse(arnaruResponse);
-    let toolCalls = parseToolCalls(parsed.fullMessage || '', body.tools);
+    let {
+      rawText,
+      parsed
+    } =
+      await readArnaruResponse(
+        arnaruResponse
+      );
 
-    // If AI calls a tool
-    if (toolCalls.length) {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return res.status(200).json(createCompletion(requestId, model, '', toolCalls));
+    let toolCalls =
+      parseToolCalls(
+        parsed.fullMessage || '',
+        body.tools
+      );
+
+    if (
+      toolCalls.length
+    ) {
+      const completion =
+        createCompletion(
+          requestId,
+          model,
+          '',
+          toolCalls
+        );
+
+      res.setHeader(
+        'Content-Type',
+        'application/json'
+      );
+
+      res.setHeader(
+        'Access-Control-Allow-Origin',
+        '*'
+      );
+
+      return res
+        .status(200)
+        .json(completion);
     }
 
-    // Bounded Recovery: If AI is blank after a tool call
-    if (continuation && !parsed.fullMessage?.trim()) {
-      console.warn('[Arnaru proxy] Empty continuation response; initiating recovery.');
-      
-      const retryBody = {
-        ...arnaruBody,
-        systemPrompt: [
-          'The external tool has finished executing.',
-          'Read the tool results in the chat history and formulate your final response to the user.',
-          'You MUST answer right now. Do not return an empty response.'
+    if (
+      continuation &&
+      !parsed.fullMessage?.trim()
+    ) {
+      console.warn(
+        '[Arnaru proxy] Empty continuation response; retrying.'
+      );
+
+      const retryPrompts = [
+        [
+          arnaruBody.systemPrompt || '',
+          '',
+          '=== RECOVERY ===',
+          'Your previous response was empty.',
+          'A tool has already completed.',
+          'Read the tool result in the conversation.',
+          'Now provide the final answer to the original user.',
+          'Return plain natural-language text.',
+          'Do not call a tool unless absolutely necessary.',
+          'Never return empty.',
+          '=== END RECOVERY ==='
+        ].join('\n'),
+
+        [
+          'The external tool has already finished.',
+          'Continue the original user request from the tool result.',
+          'Give the final answer now.',
+          'Do not return empty.'
         ].join('\n')
-      };
+      ];
 
-      const retryResponse = await callArnaruRequest(retryBody, files);
-      if (retryResponse.ok) {
-        const retryParsed = await readArnaruResponse(retryResponse);
-        rawText = retryParsed.rawText;
-        parsed = retryParsed.parsed;
-        toolCalls = parseToolCalls(parsed.fullMessage || '', body.tools);
+      for (
+        const recoveryPrompt of retryPrompts
+      ) {
+        const retryBody = {
+          ...arnaruBody,
 
-        if (toolCalls.length) {
-          res.setHeader('Content-Type', 'application/json');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          return res.status(200).json(createCompletion(requestId, model, '', toolCalls));
-        }
-      }
-    }
+          systemPrompt:
+            recoveryPrompt
+        };
 
-    if (parsed.hasError && !parsed.fullMessage?.trim()) {
-      return res.status(502).json({
-        error: { message: parsed.errorMessage || 'Upstream error', type: 'upstream_error' }
-      });
-    }
+        const retryResponse =
+          await callArnaruRequest(
+            retryBody,
+            files
+          );
 
-    // Handle Streaming
-    if (body.stream) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-
-      res.write(createStreamChunk(requestId, model, { role: 'assistant' }));
-
-      for (const chunk of parseSSEStream(rawText)) {
-        if (chunk.error) {
-          res.write(`data: ${JSON.stringify({ error: chunk.error })}\n\n`);
+        if (
+          !retryResponse.ok
+        ) {
           continue;
         }
-        if (chunk.text) {
-          res.write(createStreamChunk(requestId, model, { content: chunk.text }));
+
+        const retryParsed =
+          await readArnaruResponse(
+            retryResponse
+          );
+
+        rawText =
+          retryParsed.rawText;
+
+        parsed =
+          retryParsed.parsed;
+
+        toolCalls =
+          parseToolCalls(
+            parsed.fullMessage || '',
+            body.tools
+          );
+
+        if (
+          toolCalls.length
+        ) {
+          const completion =
+            createCompletion(
+              requestId,
+              model,
+              '',
+              toolCalls
+            );
+
+          res.setHeader(
+            'Content-Type',
+            'application/json'
+          );
+
+          res.setHeader(
+            'Access-Control-Allow-Origin',
+            '*'
+          );
+
+          return res
+            .status(200)
+            .json(completion);
+        }
+
+        if (
+          parsed.fullMessage?.trim()
+        ) {
+          break;
+        }
+      }
+    }
+
+    if (
+      parsed.hasError &&
+      !parsed.fullMessage?.trim()
+    ) {
+      return res
+        .status(502)
+        .json({
+          error: {
+            message:
+              parsed.errorMessage ||
+              'Arnaru returned an upstream error',
+
+            type:
+              'upstream_error'
+          }
+        });
+    }
+
+    if (body.stream) {
+      res.setHeader(
+        'Content-Type',
+        'text/event-stream'
+      );
+
+      res.setHeader(
+        'Cache-Control',
+        'no-cache, no-transform'
+      );
+
+      res.setHeader(
+        'Connection',
+        'keep-alive'
+      );
+
+      res.setHeader(
+        'Access-Control-Allow-Origin',
+        '*'
+      );
+
+      res.write(
+        createStreamChunk(
+          requestId,
+          model,
+          {
+            role:
+              'assistant'
+          }
+        )
+      );
+
+      for (
+        const chunk of
+        parseSSEStream(rawText)
+      ) {
+        if (
+          chunk.error
+        ) {
+          res.write(
+            `data: ${JSON.stringify({
+              error:
+                chunk.error
+            })}\n\n`
+          );
+
+          continue;
+        }
+
+        if (
+          chunk.text
+        ) {
+          res.write(
+            createStreamChunk(
+              requestId,
+              model,
+              {
+                content:
+                  chunk.text
+              }
+            )
+          );
         }
       }
 
-      res.write(createStreamChunk(requestId, model, {}, 'stop'));
-      res.write('data: [DONE]\n\n');
+      res.write(
+        createStreamChunk(
+          requestId,
+          model,
+          {},
+          'stop'
+        )
+      );
+
+      res.write(
+        'data: [DONE]\n\n'
+      );
+
       return res.end();
     }
 
-    // Handle Standard (Non-Stream)
-    const finalContent = parsed.fullMessage?.trim() || '';
-    if (!finalContent && continuation) {
-      return res.status(502).json({
-        error: { message: makeDiagnostic(parsed), type: 'empty_upstream_response' }
-      });
+    const finalContent =
+      parsed.fullMessage?.trim() ||
+      '';
+
+    if (!finalContent) {
+      if (continuation) {
+        console.error(
+          '[Arnaru proxy] Final response remained empty after recovery.'
+        );
+
+        return res
+          .status(502)
+          .json({
+            error: {
+              message:
+                makeDiagnostic(
+                  parsed
+                ),
+
+              type:
+                'empty_upstream_response'
+            }
+          });
+      }
     }
 
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    return res.status(200).json(createCompletion(requestId, model, finalContent));
+    const completion =
+      createCompletion(
+        requestId,
+        model,
+        finalContent
+      );
+
+    res.setHeader(
+      'Content-Type',
+      'application/json'
+    );
+
+    res.setHeader(
+      'Access-Control-Allow-Origin',
+      '*'
+    );
+
+    return res
+      .status(200)
+      .json(completion);
 
   } catch (error) {
-    return res.status(500).json({
-      error: { message: error instanceof Error ? error.message : 'Internal server error', type: 'internal_error' }
-    });
+    console.error(
+      'Proxy error:',
+      error
+    );
+
+    return res
+      .status(500)
+      .json({
+        error: {
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Internal server error',
+
+          type:
+            'internal_error'
+        }
+      });
   }
 }
