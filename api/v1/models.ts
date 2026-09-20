@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { OpenAIModelsResponse, OpenAIModel } from '../../../lib/types';
-import { getTimestamp } from '../../../lib/arnaru';
+import { OpenAIModelsResponse, OpenAIModel } from '../../lib/types';
+import { getTimestamp } from '../../lib/arnaru';
 
 // Full list of Arnaru chat models
 const ARNARU_MODELS: string[] = [
