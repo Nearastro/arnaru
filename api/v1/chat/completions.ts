@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import type { OpenAIChatRequest, OpenAITool, OpenAIToolCall } from '../../../lib/types';
+import type { OpenAIChatRequest, OpenAIToolCall } from '../../../lib/types';
+import { parseToolCalls, hasToolMarkup } from '../../../lib/tool-parser';
 import { parseSSE, parseSSEStream } from '../../../lib/sse-parser';
 import {
   buildArnaruRequest,
@@ -13,7 +14,6 @@ import {
   isEmptyContent,
   isContextTooLongError,
   isRetryableError,
-  looksLikeToolCallMarkup,
   MAX_EMPTY_RETRIES,
   MAX_UPSTREAM_PROMPT_CHARS,
   MIN_UPSTREAM_PROMPT_CHARS,
@@ -99,231 +99,6 @@ function validateModel(model: string): string {
   return VALID_MODELS.has(model)
     ? model
     : (process.env.DEFAULT_MODEL || 'claude-fable-5');
-}
-
-function getToolNames(tools?: OpenAITool[]): Set<string> {
-  return new Set(
-    (tools || [])
-      .filter(tool => tool.type === 'function' && !!tool.function?.name)
-      .map(tool => tool.function.name)
-  );
-}
-
-function findJsonObjects(text: string): string[] {
-  const results: string[] = [];
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
-
-  if (fenced) {
-    for (const block of fenced) {
-      const cleaned = block
-        .replace(/^```(?:json)?/i, '')
-        .replace(/```$/i, '')
-        .trim();
-      if (cleaned) results.push(cleaned);
-    }
-  }
-
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (c === '\\') escaped = true;
-      else if (c === '"') inString = false;
-      continue;
-    }
-
-    if (c === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (c === '{') {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (c === '}') {
-      depth--;
-      if (depth === 0 && start >= 0) {
-        results.push(text.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return results;
-}
-
-function normalizeArguments(value: any): Record<string, any> {
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === 'object') return parsed;
-    } catch {
-      return { input: value };
-    }
-  }
-
-  if (value && typeof value === 'object') return value;
-  return {};
-}
-
-function makeToolCall(name: string, args: any, suppliedId?: string): OpenAIToolCall {
-  return {
-    id: suppliedId || `call_${generateId()}`,
-    type: 'function',
-    function: {
-      name,
-      arguments: JSON.stringify(normalizeArguments(args))
-    }
-  };
-}
-
-function parseToolCalls(text: string, tools?: OpenAITool[]): OpenAIToolCall[] {
-  const allowed = getToolNames(tools);
-  if (!allowed.size) return [];
-
-  const calls: OpenAIToolCall[] = [];
-  const seen = new Set<string>();
-
-  function add(name: any, args: any, id?: any) {
-    if (typeof name !== 'string' || !allowed.has(name)) return;
-
-    const normalized = normalizeArguments(args);
-    const key = `${name}:${JSON.stringify(normalized)}`;
-    if (seen.has(key)) return;
-
-    seen.add(key);
-    calls.push(
-      makeToolCall(
-        name,
-        normalized,
-        typeof id === 'string' ? id : undefined
-      )
-    );
-  }
-
-  const xmlMatches = text.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi);
-  if (xmlMatches) {
-    for (const block of xmlMatches) {
-      const cleaned = block
-        .replace(/^<tool_call>\s*/i, '')
-        .replace(/\s*<\/tool_call>$/i, '')
-        .trim();
-
-      try {
-        const obj = JSON.parse(cleaned);
-
-        if (obj?.name) {
-          add(obj.name, obj.arguments ?? obj.parameters ?? {}, obj.id);
-        }
-
-        if (Array.isArray(obj?.tool_calls)) {
-          for (const call of obj.tool_calls) {
-            add(
-              call?.function?.name || call?.name || call?.tool,
-              call?.function?.arguments ?? call?.arguments ?? call?.parameters ?? {},
-              call?.id
-            );
-          }
-        }
-      } catch {
-        // Continue
-      }
-    }
-  }
-
-  const prefixMatches = [...text.matchAll(/TOOL_CALL\s*:\s*([\s\S]+)/gi)];
-  for (const match of prefixMatches) {
-    try {
-      const obj = JSON.parse(match[1].trim());
-      add(
-        obj?.name || obj?.tool || obj?.function?.name,
-        obj?.arguments ?? obj?.parameters ?? obj?.function?.arguments ?? {},
-        obj?.id
-      );
-    } catch {
-      // Continue
-    }
-  }
-
-  const jsons = findJsonObjects(text);
-  for (const raw of jsons) {
-    try {
-      const obj = JSON.parse(raw);
-      if (!obj || typeof obj !== 'object') continue;
-
-      if (Array.isArray(obj.tool_calls)) {
-        for (const call of obj.tool_calls) {
-          add(
-            call?.function?.name || call?.name || call?.tool,
-            call?.function?.arguments ?? call?.arguments ?? call?.parameters ?? {},
-            call?.id
-          );
-        }
-        continue;
-      }
-
-      if (obj.tool_call && typeof obj.tool_call === 'object') {
-        const call = obj.tool_call;
-        add(
-          call.name || call.tool || call.function?.name,
-          call.arguments ?? call.parameters ?? call.function?.arguments ?? {},
-          call.id
-        );
-        continue;
-      }
-
-      if (obj.function_call && typeof obj.function_call === 'object') {
-        const call = obj.function_call;
-        add(call.name, call.arguments ?? {}, call.id);
-        continue;
-      }
-
-      const name = typeof obj.name === 'string'
-        ? obj.name
-        : typeof obj.tool === 'string'
-          ? obj.tool
-          : undefined;
-
-      if (!name) continue;
-
-      let args = obj.arguments !== undefined ? obj.arguments : obj.parameters;
-      if (args === undefined) {
-        const copy = { ...obj };
-        delete copy.name;
-        delete copy.tool;
-        args = copy;
-      }
-
-      add(name, args, obj.id);
-    } catch {
-      // Not valid JSON
-    }
-  }
-
-  const calledMatches = [...text.matchAll(/Called function\s+([A-Za-z0-9_.:-]+)/gi)];
-  if (calledMatches.length) {
-    const jsonsFromCalled = findJsonObjects(text);
-    for (const match of calledMatches) {
-      const name = match[1];
-      for (const raw of jsonsFromCalled) {
-        try {
-          const obj = JSON.parse(raw);
-          add(name, obj);
-          break;
-        } catch {
-          // Continue
-        }
-      }
-    }
-  }
-
-  return calls;
 }
 
 function createCompletion(
@@ -563,6 +338,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hasToolResult: continuation,
         hasAssistantToolCall: hasAssistantToolCall(body),
         toolCount: body.tools?.length || 0,
+        toolChoice: body.tool_choice || 'auto',
+        stream: !!body.stream,
         hasFiles: files.length > 0
       })
     );
@@ -584,11 +361,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let { rawText, parsed } = await readArnaruResponse(arnaruResponse);
     let toolCalls = parseToolCalls(parsed.fullMessage || '', body.tools);
 
-    if (toolCalls.length) {
+    if (toolCalls.length && !body.stream) {
       const completion = createCompletion(requestId, model, '', toolCalls);
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
       return res.status(200).json(completion);
+    }
+
+    if (toolCalls.length && body.stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      res.write(createStreamChunk(requestId, model, { role: 'assistant' }));
+
+      toolCalls.forEach((call, index) => {
+        res.write(
+          createStreamChunk(requestId, model, {
+            tool_calls: [{
+              index,
+              id: call.id,
+              type: 'function',
+              function: {
+                name: call.function.name,
+                arguments: ''
+              }
+            }]
+          })
+        );
+
+        res.write(
+          createStreamChunk(requestId, model, {
+            tool_calls: [{
+              index,
+              function: {
+                arguments: call.function.arguments
+              }
+            }]
+          }, 'tool_calls')
+        );
+      });
+
+      res.write('data: [DONE]\\n\\n');
+      return res.end();
     }
 
     let retryAttempt = 0;
@@ -596,7 +412,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const hasMalformedToolMarkup = (): boolean =>
       !!(body.tools && body.tools.length) &&
       !parseToolCalls(parsed.fullMessage || '', body.tools).length &&
-      looksLikeToolCallMarkup(parsed.fullMessage || '');
+      hasToolMarkup(parsed.fullMessage || '');
 
     while (
       retryAttempt < MAX_EMPTY_RETRIES &&
