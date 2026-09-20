@@ -133,3 +133,15 @@ export interface ArnaruSSEData {
     text?: string;
   }>;
 }
+
+export interface OpenAIModel {
+  id: string;
+  object: 'model';
+  created: number;
+  owned_by: string;
+}
+
+export interface OpenAIModelsResponse {
+  object: 'list';
+  data: OpenAIModel[];
+}
