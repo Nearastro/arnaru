@@ -3,6 +3,7 @@ import {
   OpenAIContentPart,
   ArnaruFileAttachment
 } from './types';
+import { truncateToolOutput } from './recovery';
 
 const ARNARU_BASE_URL =
   process.env.ARNARU_BASE_URL ||
@@ -234,10 +235,7 @@ export async function extractMessageContent(
               msg.content ?? ''
             );
 
-      // KUNCI FIX: Potong output shell yang raksasa biar context window gak meledak
-      if (result.length > 6000) {
-        result = result.substring(0, 6000) + '\n\n... [OUTPUT TRUNCATED DUE TO LENGTH - PLEASE CONTINUE] ...';
-      }
+      result = truncateToolOutput(result);
 
       const callId =
         msg.tool_call_id ||

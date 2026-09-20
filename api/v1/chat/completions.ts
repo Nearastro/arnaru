@@ -12,10 +12,12 @@ import {
   appendPromptInstruction,
   isEmptyContent,
   isContextTooLongError,
+  isRetryableError,
   looksLikeToolCallMarkup,
   MAX_EMPTY_RETRIES,
   MAX_UPSTREAM_PROMPT_CHARS,
   MIN_UPSTREAM_PROMPT_CHARS,
+  retryDelay,
   sanitizeContent,
   truncatePromptMiddle
 } from '../../../lib/recovery';
@@ -598,7 +600,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     while (
       retryAttempt < MAX_EMPTY_RETRIES &&
-      (isEmptyContent(parsed.fullMessage) || hasMalformedToolMarkup())
+      (isEmptyContent(parsed.fullMessage) || hasMalformedToolMarkup()) &&
+      isRetryableError(parsed.errorMessage)
     ) {
       retryAttempt++;
 
@@ -658,7 +661,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `prompt=${recoveryQuestion.length}`
       );
 
-      await new Promise(r => setTimeout(r, Math.min(500 * retryAttempt, 1500)));
+      await new Promise(r => setTimeout(r, retryDelay(retryAttempt)));
 
       const retryBody = {
         ...arnaruBody,
@@ -668,7 +671,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
 
       const retryResponse = await callArnaruRequest(retryBody, files);
-      if (!retryResponse.ok) continue;
+      if (!retryResponse.ok) {
+        if (retryAttempt >= MAX_EMPTY_RETRIES) break;
+        continue;
+      }
 
       const retryParsed = await readArnaruResponse(retryResponse);
       rawText = retryParsed.rawText;
