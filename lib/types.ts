@@ -76,7 +76,19 @@ export interface OpenAIChatRequest {
     | 'auto'
     | 'none'
     | 'required'
+    | {
+        type?: 'function';
+        function?: {
+          name: string;
+        };
+      }
     | Record<string, unknown>;
+
+  /**
+   * OpenAI-compatible clients may send this to allow multiple
+   * function calls in one assistant turn.
+   */
+  parallel_tool_calls?: boolean;
 }
 
 export interface OpenAIChatResponse {
@@ -123,11 +135,15 @@ export interface ArnaruSSEData {
 
   choices?: Array<{
     delta?: {
+      role?: string;
       content?: string;
+      tool_calls?: OpenAIToolCall[];
     };
 
     message?: {
+      role?: string;
       content?: string;
+      tool_calls?: OpenAIToolCall[];
     };
 
     text?: string;
