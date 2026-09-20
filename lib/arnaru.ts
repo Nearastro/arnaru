@@ -436,7 +436,12 @@ export async function extractMessageContent(
 
   // KUNCI FIX KEDUA: Trigger murni dari sudut pandang User buat maksa AI jawab
   if (hasToolResult) {
-    question += '\n\nUser: The tool execution is finished. Please read the tool result above and answer my original request in natural language. Do not return an empty response.';
+    question +=
+      '\n\nUser: The tool execution is finished. ' +
+      'Read the tool result above and answer my original request ' +
+      'in natural language. ' +
+      'Never reply with a placeholder such as "." or "...". ' +
+      'Do not return an empty response.';
   }
 
   return {

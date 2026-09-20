@@ -234,6 +234,7 @@ function appendContinuation(systemPrompt: string): string {
     'Use the tool result as factual context.',
     'Do not invent results.',
     'Do not say you are waiting for a tool.',
+    'Do not reply with a placeholder such as "." or "...".',
     'Do not return an empty response.',
     '=== END FINAL AGENT CONTINUATION ==='
   ].join('\n');
@@ -260,7 +261,7 @@ function makeDiagnostic(parsed: any): string {
   if (parsed?.errorMessage) {
     return `Arnaru returned an error: ${parsed.errorMessage}`;
   }
-  return 'Arnaru returned an empty response after the tool execution.';
+  return 'Arnaru returned an empty or placeholder response after the tool execution.';
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -445,7 +446,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           recoverySystemPrompt,
           '',
           '=== RECOVERY ===',
-          'Your previous response was empty.',
+          'Your previous response was empty or a placeholder (e.g. a single period ".").',
+          'A placeholder reply is not acceptable; write the actual answer.',
           contextTooLong ? 'The previous context may have been too long.' : '',
           'A tool may already have completed; its real result is in the conversation above.',
           'Now provide the final answer to the original user.',
@@ -520,6 +522,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (body.stream) {
+      if (isEmptyContent(parsed.fullMessage) && continuation) {
+        console.error('[Arnaru proxy] Stream response remained empty after recovery.');
+        return res.status(502).json({
+          error: {
+            message: makeDiagnostic(parsed),
+            type: 'empty_upstream_response'
+          }
+        });
+      }
+
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
@@ -549,7 +561,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const finalContent = parsed.fullMessage?.trim() || '';
 
-    if (!finalContent && continuation) {
+    if (isEmptyContent(finalContent) && continuation) {
       console.error('[Arnaru proxy] Final response remained empty after recovery.');
       return res.status(502).json({
         error: {

@@ -86,14 +86,31 @@ export function looksLikeToolCallMarkup(text: unknown): boolean {
   );
 }
 
-export function isEmptyContent(text: string | null | undefined): boolean {
-  return !text || !String(text).trim();
+const PLACEHOLDER_ONLY_RE =
+  /^[\s.\-–—_•·*‥…]+$/u;
+
+/**
+ * Detect replies that carry no real information (a single period,
+ * ellipsis, dash, bullet, etc.). They must be treated like empty
+ * content so recovery retries produce a real answer instead of the
+ * client receiving only ".".
+ */
+export function isPlaceholderContent(
+  text: string | null | undefined
+): boolean {
+  const value = String(text ?? '').trim();
+  return value.length > 0 && PLACEHOLDER_ONLY_RE.test(value);
 }
 
-export const RETRY_INITIAL_DELAY_MS = 2000;
-export const RETRY_BACKOFF_FACTOR = 2;
+export function isEmptyContent(text: string | null | undefined): boolean {
+  const value = String(text ?? '');
+  return !value.trim() || isPlaceholderContent(value);
+}
+
+export const RETRY_INITIAL_DELAY_MS = 800;
+export const RETRY_BACKOFF_FACTOR = 1.5;
 export const RETRY_JITTER_FACTOR = 0.25;
-export const RETRY_MAX_DELAY_MS = 30000;
+export const RETRY_MAX_DELAY_MS = 10000;
 
 /**
  * Exponential backoff with jitter, capped at RETRY_MAX_DELAY_MS.

@@ -2,6 +2,11 @@
 
 Proxy OpenAI-compatible untuk Arnaru AI API.
 
+Proxy ini otomatis melakukan retry (dengan backoff singkat) kalau Arnaru
+membalas kosong atau cuma placeholder seperti `.` saja — terutama setelah
+eksekusi tool/command — sehingga client (RikkaHub/dll) selalu mendapat
+jawaban teks yang utuh.
+
 ## Deploy ke Vercel
 
 1. Extract zip, push ke GitHub
